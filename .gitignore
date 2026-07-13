@@ -1,0 +1,38 @@
+# --- Sample data (as requested) ---
+samples/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- Python bytecode / caches ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- Secrets / API keys ---
+.env
+.env.*
+*.key
+
+# --- Bundled binaries (downloaded via setup, not committed) ---
+tools/
+
+# --- Generated CV output ---
+output/
+*.aux
+*.log
+*.out
+*.toc
+
+# --- Tooling / IDE ---
+.vscode/
+.idea/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
