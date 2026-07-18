@@ -76,8 +76,8 @@ def render_pdf(
 
     Args:
         cv: the validated CV to render.
-        template_name: which template file to use (``templating.STYLE_A`` /
-            ``STYLE_B``, or any ``*.tex.j2`` in ``cv_agent/templates/``).
+        template_name: which template file to use (``templating.STYLE_A``, or
+            any ``*.tex.j2`` in ``cv_agent/templates/``).
         output_dir: directory for the ``.tex`` and ``.pdf`` (created if needed).
         basename: output filename stem; defaults to a slug of ``cv.name``.
         tectonic_path: explicit path to the Tectonic binary (else auto-located).

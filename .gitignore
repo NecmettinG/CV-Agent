@@ -1,5 +1,6 @@
-# --- Sample data (as requested) ---
+# --- Sample data / real CV inputs (never commit real PII) ---
 samples/
+test inputs/
 
 # --- Virtual environments ---
 .venv/

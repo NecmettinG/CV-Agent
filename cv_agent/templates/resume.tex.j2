@@ -1,8 +1,12 @@
 % =====================================================================
-% resume.tex.j2 - Jinja2 template for CV Style A (Cambridge-Oxford, from
+% resume.tex.j2 - the CV template (Cambridge-Oxford style, from
 % samples/CV Example.pdf). Rendered by cv_agent/templating.py, which uses
-% LaTeX-safe delimiters (VAR for variables, BLOCK for logic).
-% Engine: Tectonic (XeTeX).
+% LaTeX-safe delimiters (VAR for variables, BLOCK for logic). Engine: Tectonic.
+%
+% Structure: a typed header + EXPERIENCE + EDUCATION, then a loop over
+% cv.sections. Each section carries its OWN heading (section.title) and a `kind`
+% that selects the body layout (list / skills / entries / text), so any section
+% a CV has is rendered under its own name. Empty sections are skipped.
 % =====================================================================
 \documentclass[11pt,a4paper]{article}
 
@@ -36,6 +40,10 @@
 \newlength{\entrygap}\setlength{\entrygap}{7pt}
 \newlength{\subgap}\setlength{\subgap}{5pt}
 
+% Bullet lists for highlights / dynamic sections (single column, ATS-safe).
+\setlist[itemize,1]{leftmargin=2.6em, itemsep=1pt, topsep=2pt, parsep=0pt, label=\textbullet}
+\setlist[itemize,2]{leftmargin=1.5em, itemsep=0.5pt, topsep=1pt, parsep=0pt, label={$\circ$}}
+
 \newcommand{\cvsection}[1]{%
   \vspace{6pt}%
   {\bfseries #1}\par
@@ -48,18 +56,24 @@
 \newcommand{\subhead}[1]{\noindent\textbf{#1}\par}
 \newcommand{\techline}[1]{\noindent\textit{#1}\par}
 \newcommand{\descpar}[1]{{\advance\leftskip by \lvl\noindent #1\par}}
+\newcommand{\contactline}[1]{{\advance\leftskip by \lvl\noindent\small #1\par}}
 
 \begin{document}
 
 % ----------------------------- Header ------------------------------
 \begin{center}
-  {\LARGE\bfseries \VAR{ cv.name | upper | e }}\\[3pt]
+  {\LARGE\bfseries \VAR{ cv.name | uc(cv.language) | e }}\\[3pt]
+\BLOCK{ if cv.headline }
+  {\large \VAR{ cv.headline | e }}\\[3pt]
+\BLOCK{ endif }
 \BLOCK{ set ns = namespace(parts=[]) }
 \BLOCK{ if cv.contact.location }\BLOCK{ set ns.parts = ns.parts + [cv.contact.location | e] }\BLOCK{ endif }
 \BLOCK{ if cv.contact.phone }\BLOCK{ set ns.parts = ns.parts + ['\\ulink{tel:' ~ cv.contact.phone ~ '}{' ~ (cv.contact.phone | e) ~ '}'] }\BLOCK{ endif }
 \BLOCK{ if cv.contact.email }\BLOCK{ set ns.parts = ns.parts + ['\\ulink{mailto:' ~ cv.contact.email ~ '}{' ~ (cv.contact.email | e) ~ '}'] }\BLOCK{ endif }
 \BLOCK{ for l in cv.contact.links }\BLOCK{ set ns.parts = ns.parts + ['\\ulink{' ~ l.url ~ '}{' ~ (l.label | e) ~ '}'] }\BLOCK{ endfor }
+\BLOCK{ if ns.parts }
   {\VAR{ ns.parts | join(' – ') }}\\[3pt]
+\BLOCK{ endif }
 \BLOCK{ if cv.summary }
   {\itshape \VAR{ cv.summary | e }}
 \BLOCK{ endif }
@@ -68,10 +82,10 @@
 
 % --------------------------- Experience ----------------------------
 \BLOCK{ if cv.experience }
-\cvsection{EXPERIENCE}
+\cvsection{\VAR{ t.experience | uc(cv.language) }}
 \BLOCK{ for entry in cv.experience }
 \BLOCK{ if entry.is_umbrella }
-\rolehead{\VAR{ entry.company | e }}{\VAR{ entry.date_range | range_a }}
+\rolehead{\VAR{ entry.company | e }}{\VAR{ entry.date_range | range_a(cv.language) }}
 \vspace{2pt}
 {\advance\leftskip by \lvl
 \BLOCK{ for sr in entry.sub_roles }
@@ -82,18 +96,32 @@
 \BLOCK{ if sr.description or sr.links }
   \descpar{\VAR{ sr.description | e }\BLOCK{ if sr.links } \BLOCK{ for l in sr.links }\ulink{\VAR{ l.url }}{\VAR{ l.label | e }}\BLOCK{ if not loop.last }, \BLOCK{ endif }\BLOCK{ endfor }\BLOCK{ endif }}
 \BLOCK{ endif }
+\BLOCK{ if sr.highlights }
+\begin{itemize}
+\BLOCK{ for h in sr.highlights }
+  \item \VAR{ h | e }
+\BLOCK{ endfor }
+\end{itemize}
+\BLOCK{ endif }
 \BLOCK{ if not loop.last }
   \vspace{\subgap}
 \BLOCK{ endif }
 \BLOCK{ endfor }
 }
 \BLOCK{ else }
-\rolehead{\VAR{ entry.company | e } - \VAR{ entry.title | e }}{\VAR{ entry.date_range | range_a }}
+\rolehead{\VAR{ entry.company | e } - \VAR{ entry.title | e }}{\VAR{ entry.date_range | range_a(cv.language) }}
 \BLOCK{ if entry.tech_stack }
 \techline{\VAR{ entry.tech_stack | join(', ') | e }}
 \BLOCK{ endif }
 \BLOCK{ if entry.description or entry.links }
 \descpar{\VAR{ entry.description | e }\BLOCK{ if entry.links } \BLOCK{ for l in entry.links }\ulink{\VAR{ l.url }}{\VAR{ l.label | e }}\BLOCK{ if not loop.last }, \BLOCK{ endif }\BLOCK{ endfor }\BLOCK{ endif }}
+\BLOCK{ endif }
+\BLOCK{ if entry.highlights }
+\begin{itemize}
+\BLOCK{ for h in entry.highlights }
+  \item \VAR{ h | e }
+\BLOCK{ endfor }
+\end{itemize}
 \BLOCK{ endif }
 \BLOCK{ endif }
 \BLOCK{ if not loop.last }
@@ -104,31 +132,82 @@
 
 % ---------------------------- Education ----------------------------
 \BLOCK{ if cv.education }
-\cvsection{EDUCATION}
+\cvsection{\VAR{ t.education | uc(cv.language) }}
 \BLOCK{ for edu in cv.education }
+\BLOCK{ if edu.url }
+\noindent\textbf{\ulink{\VAR{ edu.url }}{\VAR{ edu.institution | e }}}\hfill \VAR{ edu.location | e }\\
+\BLOCK{ else }
 \noindent\textbf{\VAR{ edu.institution | e }}\hfill \VAR{ edu.location | e }\\
-\textit{\VAR{ edu.degree | e }}\hfill \VAR{ edu.date_range | range_years }\par
+\BLOCK{ endif }
+\textit{\VAR{ edu.degree | e }}\hfill \VAR{ edu.date_range | range_years(cv.language) }\par
+\BLOCK{ if edu.highlights }
+\begin{itemize}
+\BLOCK{ for h in edu.highlights }
+  \item \VAR{ h | e }
+\BLOCK{ endfor }
+\BLOCK{ if edu.links }
+\begin{itemize}
+\BLOCK{ for l in edu.links }
+  \item \ulink{\VAR{ l.url }}{\VAR{ l.label | e }}
+\BLOCK{ endfor }
+\end{itemize}
+\BLOCK{ endif }
+\end{itemize}
+\BLOCK{ elif edu.links }
+\begin{itemize}
+\BLOCK{ for l in edu.links }
+  \item \ulink{\VAR{ l.url }}{\VAR{ l.label | e }}
+\BLOCK{ endfor }
+\end{itemize}
+\BLOCK{ endif }
 \BLOCK{ if not loop.last }
 \vspace{\entrygap}
 \BLOCK{ endif }
 \BLOCK{ endfor }
 \BLOCK{ endif }
 
-% -------------------------- Experienced with -----------------------
-\BLOCK{ if cv.skills and (cv.skills.primary or cv.skills.good_to_mention) }
-\cvsection{EXPERIENCED WITH}
-\BLOCK{ if cv.skills.primary }
+% ------------------------- Dynamic sections ------------------------
+\BLOCK{ for section in cv.sections }
+\BLOCK{ if section.has_content }
+\cvsection{\VAR{ section.title | uc(cv.language) }}
+\BLOCK{ if section.kind == 'skills' and section.bullets }
 \begin{multicols}{2}
 \begin{itemize}[leftmargin=1.4em, itemsep=1pt, topsep=2pt, parsep=0pt, label=\textbullet]
-\BLOCK{ for s in cv.skills.primary }
-  \item \VAR{ s | e }
+\BLOCK{ for b in section.bullets }
+  \item \VAR{ b | e }
 \BLOCK{ endfor }
 \end{itemize}
 \end{multicols}
+\BLOCK{ elif section.kind == 'entries' and section.entries }
+\BLOCK{ for e in section.entries }
+\BLOCK{ if e.url }\rolehead{\ulink{\VAR{ e.url }}{\VAR{ e.title | e }}}{\VAR{ e.date_range | range_a(cv.language) }}\BLOCK{ else }\rolehead{\VAR{ e.title | e }}{\VAR{ e.date_range | range_a(cv.language) }}\BLOCK{ endif }
+\BLOCK{ if e.detail }\descpar{\VAR{ e.detail | e }}\BLOCK{ endif }
+\BLOCK{ set ec = namespace(parts=[]) }
+\BLOCK{ if e.phone }\BLOCK{ set ec.parts = ec.parts + ['\\ulink{tel:' ~ e.phone ~ '}{' ~ (e.phone | e) ~ '}'] }\BLOCK{ endif }
+\BLOCK{ if e.email }\BLOCK{ set ec.parts = ec.parts + ['\\ulink{mailto:' ~ e.email ~ '}{' ~ (e.email | e) ~ '}'] }\BLOCK{ endif }
+\BLOCK{ for l in e.links }\BLOCK{ set ec.parts = ec.parts + ['\\ulink{' ~ l.url ~ '}{' ~ (l.label | e) ~ '}'] }\BLOCK{ endfor }
+\BLOCK{ if ec.parts }\contactline{\VAR{ ec.parts | join(' \\textbullet{} ') }}\BLOCK{ endif }
+\BLOCK{ if e.highlights }
+\begin{itemize}
+\BLOCK{ for h in e.highlights }
+  \item \VAR{ h | e }
+\BLOCK{ endfor }
+\end{itemize}
 \BLOCK{ endif }
-\BLOCK{ if cv.skills.good_to_mention }
-\noindent (Good to mention: \VAR{ cv.skills.good_to_mention | join(', ') | e })
+\BLOCK{ if not loop.last }
+\vspace{\entrygap}
+\BLOCK{ endif }
+\BLOCK{ endfor }
+\BLOCK{ elif section.kind == 'text' and section.text }
+\noindent \VAR{ section.text | e }\par
+\BLOCK{ elif section.bullets }
+\begin{itemize}
+\BLOCK{ for b in section.bullets }
+  \item \VAR{ b | e }
+\BLOCK{ endfor }
+\end{itemize}
 \BLOCK{ endif }
 \BLOCK{ endif }
+\BLOCK{ endfor }
 
 \end{document}

@@ -1,4 +1,4 @@
-"""Pydantic data model for a CV, shaped after the Cambridge-Oxford format(s).
+"""Pydantic data model for a CV, shaped after the Cambridge-Oxford format.
 
 This module is the single source of truth for what a CV *is* inside CV-Agent.
 Everything flows through it:
@@ -9,16 +9,15 @@ Because the LLM returns free-form text, we never trust it directly: we validate
 its output into these typed models first. If a field is missing or malformed,
 validation fails loudly here instead of producing a broken PDF later.
 
-The model is deliberately a SUPERSET that can feed either output style:
+The output format is a single style, modelled on ``samples/CV Example.pdf``:
+ALL-CAPS section headings with a full-width rule, an italic tech line + paragraph
+(or bullets) per role, two-column skills, umbrella employers.
 
-* Style A (samples/CV Example.pdf) - ALL-CAPS section headings, an italic tech
-  line + justified paragraph per role, two-column skills, umbrella employers.
-* Style B (samples/CV Example 2.pdf) - "Title:" headings, bulleted descriptions,
-  extra sections (Competitions, Projects, Languages, References), bold-label
-  skills, lots of clickable links.
-
-Each Jinja2 template renders only the fields its style uses, so one CV object
-can be poured into either template.
+**Header + experience + education are typed** (they are universal and need a
+specific layout). **Everything else is a dynamic** :class:`Section`: its heading
+is taken verbatim from the CV, so any section a CV happens to have - Projects,
+Certificates, Community, Volunteering, References, Interests, ... - is preserved
+under its own name instead of being forced into a fixed slot.
 """
 
 from __future__ import annotations
@@ -46,7 +45,7 @@ class Link(_Base):
     """A labelled hyperlink, e.g. a LinkedIn / GitHub / project / repo link.
 
     ``url`` is what makes links actually *clickable* in the output PDF - the
-    templates render every Link as ``\\href{url}{label}``.
+    template renders every Link as ``\\href{url}{label}``.
     """
 
     label: str = Field(..., description="Text shown to the reader, e.g. 'LinkedIn'.")
@@ -54,16 +53,15 @@ class Link(_Base):
 
 
 class MonthYear(_Base):
-    """A point in time. ``month`` is optional so the same type serves both
-    experience dates (``'24 Jun`` / ``06.2024``) and year-only education dates."""
+    """A point in time. ``month`` is optional so the same type serves both dated
+    experience (``'24 Jun``) and year-only education dates."""
 
     year: int = Field(..., ge=1900, le=2100)
     month: Optional[int] = Field(default=None, ge=1, le=12)
 
 
 class DateRange(_Base):
-    """A start/end span. Rendering (not the schema) decides the visual style:
-    Style A uses ``'YY Mon``, Style B uses ``MM.YYYY`` or a bare year.
+    """A start/end span rendered as ``'23 Jun - '24 Jun`` / ``'24 Jun - Current``.
 
     * A single date (e.g. a graduation year): set ``start`` only.
     * An ongoing role: set ``current=True`` and leave ``end`` empty.
@@ -72,7 +70,7 @@ class DateRange(_Base):
     start: Optional[MonthYear] = None
     end: Optional[MonthYear] = None
     current: bool = Field(
-        default=False, description="True for a still-active role (renders 'Current'/'ongoing')."
+        default=False, description="True for a still-active role (renders 'Current')."
     )
 
     @model_validator(mode="after")
@@ -102,17 +100,15 @@ class Contact(_Base):
 # Experience
 # --------------------------------------------------------------------------- #
 class SubRole(_Base):
-    """A single position nested under an umbrella employer (the agency case in
-    Style A). Carries its own company/title/tech/description but NOT its own
-    dates - those live on the parent :class:`ExperienceEntry`."""
+    """A single position nested under an umbrella employer (the agency case).
+    Carries its own company/title/tech/description but NOT its own dates - those
+    live on the parent :class:`ExperienceEntry`."""
 
     company: str = Field(..., description="Sub-employer name, e.g. 'Finwave'.")
     title: str = Field(..., description="Role title, e.g. 'Senior Backend Engineer'.")
     tech_stack: List[str] = Field(default_factory=list, description="Italic tech line.")
-    description: Optional[str] = None
-    highlights: List[str] = Field(
-        default_factory=list, description="Bullet points (used by bulleted styles)."
-    )
+    description: Optional[str] = Field(default=None, description="Paragraph body.")
+    highlights: List[str] = Field(default_factory=list, description="Bullet points.")
     links: List[Link] = Field(
         default_factory=list, description="Trailing clickable links (e.g. project names)."
     )
@@ -124,9 +120,8 @@ class ExperienceEntry(_Base):
     * **Normal role** - ``title`` set, ``sub_roles`` empty.
     * **Umbrella employer** - ``sub_roles`` non-empty, ``title`` empty (an agency).
 
-    Style A uses ``tech_stack`` + ``description`` (paragraph); Style B uses
-    ``highlights`` (bullets) plus ``location`` / ``work_mode`` /
-    ``employment_type``. A role may fill whichever its target style needs.
+    A role's body may be a ``description`` paragraph, ``highlights`` bullets, or
+    both - use whichever the source CV uses.
     """
 
     company: str = Field(..., description="Employer name, e.g. 'PayNova' or 'TalentBridge'.")
@@ -139,9 +134,9 @@ class ExperienceEntry(_Base):
         default=None, description="Shown in parens, e.g. 'Volunteer', 'Intern'."
     )
     date_range: DateRange
-    tech_stack: List[str] = Field(default_factory=list, description="Italic tech line (Style A).")
-    description: Optional[str] = Field(default=None, description="Paragraph body (Style A).")
-    highlights: List[str] = Field(default_factory=list, description="Bullet points (Style B).")
+    tech_stack: List[str] = Field(default_factory=list, description="Italic tech/skills line.")
+    description: Optional[str] = Field(default=None, description="Paragraph body.")
+    highlights: List[str] = Field(default_factory=list, description="Bullet points.")
     links: List[Link] = Field(
         default_factory=list, description="Trailing clickable links (e.g. project names)."
     )
@@ -173,89 +168,99 @@ class ExperienceEntry(_Base):
 # Education
 # --------------------------------------------------------------------------- #
 class EducationEntry(_Base):
-    """One block in the EDUCATION section.
-
-    Style A uses ``degree`` (italic line) + ``date_range`` + ``location``.
-    Style B uses the header + ``highlights`` (bullets), an optional ``url``
-    (e.g. a course link), and often no separate ``degree``."""
+    """One block in the EDUCATION section: bold ``institution`` (+ ``location``)
+    on line one, italic ``degree`` (+ ``date_range``) on line two, optional
+    ``highlights`` bullets, and an optional ``url`` that links the header."""
 
     institution: str = Field(..., description="e.g. 'Metropolitan Technical University'.")
-    degree: Optional[str] = Field(default=None, description="e.g. \"Computer Engineering\".")
+    degree: Optional[str] = Field(default=None, description="e.g. 'Computer Engineering'.")
     location: Optional[str] = Field(default=None, description="e.g. 'Istanbul, Turkey'.")
     date_range: Optional[DateRange] = None
-    highlights: List[str] = Field(default_factory=list, description="Bullet points (Style B).")
+    highlights: List[str] = Field(default_factory=list, description="Bullet points.")
     links: List[Link] = Field(
-        default_factory=list, description="Nested sub-links under the last bullet (e.g. course repos)."
+        default_factory=list, description="Sub-links (e.g. course repos) under the bullets."
     )
     url: Optional[str] = Field(default=None, description="Makes the header a clickable link.")
 
 
 # --------------------------------------------------------------------------- #
-# Competitions / Projects / Languages / References (mostly Style B)
+# Dynamic sections (everything that is not experience/education)
 # --------------------------------------------------------------------------- #
-class Competition(_Base):
-    """One entry in a COMPETITIONS section."""
+class SectionEntry(_Base):
+    """One titled entry inside a ``kind='entries'`` :class:`Section` - a project,
+    certificate, award, competition, or a reference."""
 
-    title: str = Field(..., description="e.g. 'Su Hackathonu (Water Hackathon): 2026'.")
-    location: Optional[str] = None
-    url: Optional[str] = None
-    highlights: List[str] = Field(default_factory=list)
-
-
-class Project(_Base):
-    """One entry in a PROJECTS section: a bold (optionally linked) name, a
-    description, and optional nested links / bullets."""
-
-    name: str = Field(..., description="Project name, shown bold; linked if 'url' set.")
-    description: Optional[str] = None
-    url: Optional[str] = Field(default=None, description="Makes the name a clickable link.")
-    links: List[Link] = Field(
-        default_factory=list, description="Nested sub-links (e.g. component repos)."
+    title: str = Field(
+        ..., description="Bold lead text: a project/certificate/award name, or a reference's name."
     )
-    highlights: List[str] = Field(default_factory=list)
-
-
-class Language(_Base):
-    """One entry in a LANGUAGES section."""
-
-    name: str = Field(..., description="e.g. 'English'.")
-    level: Optional[str] = Field(default=None, description="e.g. 'C1', 'Native'.")
-
-
-class Reference(_Base):
-    """One entry in a REFERENCES section."""
-
-    name: str = Field(..., description="e.g. 'Alex Thompson'.")
     detail: Optional[str] = Field(
-        default=None, description="e.g. 'Software Engineer III, ING Hubs Turkey'."
+        default=None,
+        description="Text under the title: a description, or a reference's 'Title, Company'.",
     )
-    url: Optional[str] = None
-
-
-# --------------------------------------------------------------------------- #
-# Skills
-# --------------------------------------------------------------------------- #
-class SkillCategory(_Base):
-    """A bold-label skill bullet (Style B), e.g. **Java:** Spring Boot, JPA..."""
-
-    name: str = Field(..., description="Bold label, e.g. 'Java'.")
-    detail: Optional[str] = Field(default=None, description="Text after the label.")
-    emphasis: bool = Field(default=False, description="Render the label bold-italic.")
-
-
-class Skills(_Base):
-    """The skills section. Style A uses ``primary`` + ``good_to_mention``;
-    Style B uses ``categories``. Templates read whichever they need."""
-
-    primary: List[str] = Field(
-        default_factory=list, description="Bulleted skills (Style A two-column list)."
+    date_range: Optional[DateRange] = Field(
+        default=None, description="Optional date/year, shown on the right."
     )
-    good_to_mention: List[str] = Field(
-        default_factory=list, description="Secondary '(Good to mention: ...)' skills (Style A)."
+    url: Optional[str] = Field(
+        default=None, description="If set, the TITLE becomes a link to this URL (e.g. a project repo)."
     )
-    categories: List[SkillCategory] = Field(
-        default_factory=list, description="Bold-label skill bullets (Style B)."
+    phone: Optional[str] = Field(
+        default=None, description="Phone (e.g. a reference's), copied verbatim -> tel: link."
     )
+    email: Optional[str] = Field(
+        default=None, description="Email (e.g. a reference's) -> mailto: link."
+    )
+    links: List[Link] = Field(
+        default_factory=list, description="Extra clickable links (repo sub-links, a reference's site)."
+    )
+    highlights: List[str] = Field(default_factory=list, description="Bullet points under the entry.")
+
+
+_SECTION_KINDS = {"list", "skills", "entries", "text"}
+
+
+class Section(_Base):
+    """A dynamic CV section. Its heading comes from the CV itself, so ANY section
+    is supported (Projects, Certificates, Community, Volunteering, References,
+    Interests, Personal Details, ...). ``kind`` selects how the body is rendered.
+    """
+
+    title: str = Field(
+        ...,
+        description="Section heading, VERBATIM from the CV in its own language "
+        "(e.g. 'Projects', 'Community', 'References', 'Certificates').",
+    )
+    kind: str = Field(
+        default="list",
+        description="Render shape: 'list' (bullet list: interests, languages, community), "
+        "'skills' (two-column bullet list), 'entries' (titled entries: projects, references, "
+        "certificates, competitions), or 'text' (one paragraph).",
+    )
+    bullets: List[str] = Field(
+        default_factory=list, description="Items for kind 'list'/'skills' (one string per bullet)."
+    )
+    entries: List[SectionEntry] = Field(
+        default_factory=list, description="Entries for kind 'entries'."
+    )
+    text: Optional[str] = Field(default=None, description="Paragraph for kind 'text'.")
+
+    @model_validator(mode="after")
+    def _normalize_kind(self) -> "Section":
+        k = (self.kind or "").strip().lower()
+        if k not in _SECTION_KINDS:
+            # Unknown kind from the model: infer a safe one from the populated payload.
+            if self.entries:
+                k = "entries"
+            elif self.text and not self.bullets:
+                k = "text"
+            else:
+                k = "list"
+        self.kind = k
+        return self
+
+    @property
+    def has_content(self) -> bool:
+        """True if the section carries anything worth rendering."""
+        return bool(self.bullets or self.entries or self.text)
 
 
 # --------------------------------------------------------------------------- #
@@ -265,35 +270,47 @@ class CV(_Base):
     """A complete CV: the object the renderer turns into LaTeX -> PDF."""
 
     name: str = Field(..., min_length=1, description="Full name, shown bold.")
+    headline: Optional[str] = Field(
+        default=None,
+        description="Professional title line shown under the name (e.g. 'Customer Support "
+        "Representative'). Fill ONLY if the CV explicitly has such a line under the name - "
+        "never invent one.",
+    )
     summary: Optional[str] = Field(
-        default=None, description="One-line italic tagline under the contact row."
+        default=None,
+        description="Profile / objective / cover-letter text shown italic under the header. "
+        "A short paragraph is fine - transcribe it faithfully, do not shorten it.",
+    )
+    language: Optional[str] = Field(
+        default=None,
+        description="ISO 639-1 code of the CV's PRIMARY language ('en', 'tr', ...). Sets the "
+        "language of the EXPERIENCE / EDUCATION headings. Omit only if unsure.",
     )
     contact: Contact = Field(default_factory=Contact)
     experience: List[ExperienceEntry] = Field(default_factory=list)
     education: List[EducationEntry] = Field(default_factory=list)
-    competitions: List[Competition] = Field(default_factory=list)
-    projects: List[Project] = Field(default_factory=list)
-    skills: Optional[Skills] = None
-    languages: List[Language] = Field(default_factory=list)
-    references: List[Reference] = Field(default_factory=list)
-    references_note: Optional[str] = Field(
-        default=None, description="Bold-italic note under references, e.g. 'shared on request'."
+    sections: List[Section] = Field(
+        default_factory=list,
+        description="Every other section, in the CV's own order, each under its own heading "
+        "(Skills, Projects, Languages, Community, Interests, References, ...).",
     )
 
 
 if __name__ == "__main__":
-    # Smoke test: build a fragment covering the tricky "umbrella" case and
-    # a Style-B section, then prove it validates and round-trips as JSON.
+    # Smoke test: cover the umbrella experience case + a few dynamic sections,
+    # then prove it validates and round-trips as JSON.
     cv = CV(
         name="Jordan Mercer",
+        headline="Software Team Lead",
         summary="Proactive problem solver with a passion for continuous improvement.",
+        language="en",
         contact=Contact(location="Berlin", phone="+49 30 5550100", email="jordan.mercer@example.com"),
         experience=[
             ExperienceEntry(
                 company="PayNova",
                 title="Software Team Lead",
                 date_range=DateRange(start=MonthYear(year=2024, month=6), current=True),
-                tech_stack=["Project Management", "Java 8-11-21", "Spring Boot 2-3"],
+                tech_stack=["Java 8-11-21", "Spring Boot 2-3"],
                 description="Leading a cross-functional team on the payback lifecycle.",
             ),
             ExperienceEntry(
@@ -312,21 +329,45 @@ if __name__ == "__main__":
                 ],
             ),
         ],
-        projects=[
-            Project(
-                name="SmartShop",
-                description="E-commerce infrastructure with Spring Boot and AWS.",
-                url="https://example.com/smartshop",
+        education=[
+            EducationEntry(
+                institution="Metropolitan Technical University",
+                degree="Computer Engineering",
+                location="Berlin",
+                date_range=DateRange(start=MonthYear(year=2016), end=MonthYear(year=2020)),
             )
         ],
-        skills=Skills(categories=[SkillCategory(name="Java", detail="Spring Boot, JPA, JUnit.")]),
-        languages=[Language(name="English", level="C1")],
-        references=[Reference(name="Alex Thompson", detail="Software Engineer III, TechCorp")],
-        references_note="Contact information will be shared upon request.",
+        sections=[
+            Section(title="Skills", kind="skills", bullets=["Java, Spring Boot", "AWS", "PostgreSQL"]),
+            Section(
+                title="Projects",
+                kind="entries",
+                entries=[
+                    SectionEntry(
+                        title="SmartShop",
+                        detail="E-commerce infrastructure with Spring Boot and AWS.",
+                        url="https://example.com/smartshop",
+                    )
+                ],
+            ),
+            Section(title="Languages", kind="list", bullets=["English (Native)", "German (B2)"]),
+            Section(
+                title="References",
+                kind="entries",
+                entries=[
+                    SectionEntry(
+                        title="Alex Thompson",
+                        detail="Software Engineer III, TechCorp",
+                        email="alex.thompson@example.com",
+                    )
+                ],
+            ),
+        ],
     )
 
     print("Validated OK.")
     print("Umbrella entry is umbrella:", cv.experience[1].is_umbrella)
+    print("Section kinds:", [s.kind for s in cv.sections])
     payload = cv.model_dump_json(indent=2)
     reparsed = CV.model_validate_json(payload)
     assert reparsed == cv, "round-trip mismatch"
