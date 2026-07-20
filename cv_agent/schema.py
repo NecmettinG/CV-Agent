@@ -22,9 +22,9 @@ under its own name instead of being forced into a fixed slot.
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Annotated, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 
 class _Base(BaseModel):
@@ -38,6 +38,43 @@ class _Base(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 
+def _with_scheme(u: str) -> str:
+    """Ensure a web URL has a scheme so ``\\href`` treats it as absolute. A CV
+    often writes a bare domain ('kayhanakbay.com'); without ``https://`` hyperref
+    makes it a broken relative link."""
+    u = u.strip()
+    if not u or "://" in u or u.startswith(("mailto:", "tel:")):
+        return u
+    return "https://" + u
+
+
+#: A URL string, normalized to always carry a scheme.
+Url = Annotated[str, AfterValidator(_with_scheme)]
+
+#: Known profiles: a link whose *label* is a bare URL of one of these is shown by
+#: its platform name instead (e.g. 'linkedin.com/in/jane' -> 'LinkedIn').
+_PLATFORM_LABELS = {
+    "linkedin.com": "LinkedIn", "github.com": "GitHub", "gitlab.com": "GitLab",
+    "bitbucket.org": "Bitbucket", "kaggle.com": "Kaggle", "medium.com": "Medium",
+    "behance.net": "Behance", "dribbble.com": "Dribbble", "stackoverflow.com": "Stack Overflow",
+    "twitter.com": "Twitter", "x.com": "X", "instagram.com": "Instagram",
+    "youtube.com": "YouTube", "facebook.com": "Facebook",
+}
+
+
+def _tidy_label(label: str) -> str:
+    """Shorten a link label that is itself a bare platform URL to the platform
+    name ('linkedin.com/in/jane' -> 'LinkedIn'). Descriptive labels (with spaces)
+    and non-platform domains are left untouched."""
+    lab = label.strip()
+    if lab and " " not in lab and ("." in lab or "://" in lab):
+        low = lab.lower()
+        for domain, name in _PLATFORM_LABELS.items():
+            if domain in low:
+                return name
+    return label
+
+
 # --------------------------------------------------------------------------- #
 # Small building blocks
 # --------------------------------------------------------------------------- #
@@ -49,7 +86,12 @@ class Link(_Base):
     """
 
     label: str = Field(..., description="Text shown to the reader, e.g. 'LinkedIn'.")
-    url: str = Field(..., description="Destination URL, e.g. 'https://...'.")
+    url: Url = Field(..., description="Destination URL, e.g. 'https://...'.")
+
+    @model_validator(mode="after")
+    def _shorten_url_label(self) -> "Link":
+        self.label = _tidy_label(self.label)
+        return self
 
 
 class MonthYear(_Base):
@@ -180,7 +222,7 @@ class EducationEntry(_Base):
     links: List[Link] = Field(
         default_factory=list, description="Sub-links (e.g. course repos) under the bullets."
     )
-    url: Optional[str] = Field(default=None, description="Makes the header a clickable link.")
+    url: Optional[Url] = Field(default=None, description="Makes the header a clickable link.")
 
 
 # --------------------------------------------------------------------------- #
@@ -200,7 +242,7 @@ class SectionEntry(_Base):
     date_range: Optional[DateRange] = Field(
         default=None, description="Optional date/year, shown on the right."
     )
-    url: Optional[str] = Field(
+    url: Optional[Url] = Field(
         default=None, description="If set, the TITLE becomes a link to this URL (e.g. a project repo)."
     )
     phone: Optional[str] = Field(
@@ -242,6 +284,11 @@ class Section(_Base):
         default_factory=list, description="Entries for kind 'entries'."
     )
     text: Optional[str] = Field(default=None, description="Paragraph for kind 'text'.")
+    note: Optional[str] = Field(
+        default=None,
+        description="A short trailing note under the section, e.g. 'References available on "
+        "request.' Rendered bold-italic after the section body.",
+    )
 
     @model_validator(mode="after")
     def _normalize_kind(self) -> "Section":
@@ -260,7 +307,7 @@ class Section(_Base):
     @property
     def has_content(self) -> bool:
         """True if the section carries anything worth rendering."""
-        return bool(self.bullets or self.entries or self.text)
+        return bool(self.bullets or self.entries or self.text or self.note)
 
 
 # --------------------------------------------------------------------------- #

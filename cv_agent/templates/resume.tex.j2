@@ -74,11 +74,17 @@
 \BLOCK{ if ns.parts }
   {\VAR{ ns.parts | join(' – ') }}\\[3pt]
 \BLOCK{ endif }
-\BLOCK{ if cv.summary }
+\BLOCK{ if cv.summary and (cv.summary | length) <= summary_threshold }
   {\itshape \VAR{ cv.summary | e }}
 \BLOCK{ endif }
 \end{center}
 \vspace{4pt}
+
+% -------- Profile / cover letter (only a long summary lands here) ---------
+\BLOCK{ if cv.summary and (cv.summary | length) > summary_threshold }
+\cvsection{\VAR{ t.profile | uc(cv.language) }}
+\noindent \VAR{ cv.summary | e }\par
+\BLOCK{ endif }
 
 % --------------------------- Experience ----------------------------
 \BLOCK{ if cv.experience }
@@ -206,6 +212,9 @@
   \item \VAR{ b | e }
 \BLOCK{ endfor }
 \end{itemize}
+\BLOCK{ endif }
+\BLOCK{ if section.note }
+\vspace{\subgap}\noindent\textbf{\itshape \VAR{ section.note | e }}\par
 \BLOCK{ endif }
 \BLOCK{ endif }
 \BLOCK{ endfor }

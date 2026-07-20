@@ -49,9 +49,15 @@ _MONTHS = [
 DEFAULT_LANG = "en"
 
 LABELS = {
-    "en": {"experience": "Experience", "education": "Education", "current": "Current", "present": "Present"},
-    "tr": {"experience": "Deneyim", "education": "Eğitim", "current": "Hâlen", "present": "Hâlen"},
+    "en": {"experience": "Experience", "education": "Education", "profile": "Profile",
+           "current": "Current", "present": "Present"},
+    "tr": {"experience": "Deneyim", "education": "Eğitim", "profile": "Önyazı",
+           "current": "Hâlen", "present": "Hâlen"},
 }
+
+# A profile/summary longer than this many characters is rendered as its own
+# top section ("PROFILE" / "ÖNYAZI") instead of the centered header tagline.
+SUMMARY_SECTION_THRESHOLD = 450
 
 
 def labels_for(language: Optional[str]) -> dict:
@@ -185,7 +191,9 @@ def render_cv(cv: CV, template_name: str) -> str:
     global _ENV
     if _ENV is None:
         _ENV = build_environment()
-    return _ENV.get_template(template_name).render(cv=cv, t=labels_for(cv.language))
+    return _ENV.get_template(template_name).render(
+        cv=cv, t=labels_for(cv.language), summary_threshold=SUMMARY_SECTION_THRESHOLD
+    )
 
 
 # The single built-in style.

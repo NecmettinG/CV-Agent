@@ -30,6 +30,7 @@ provider's documented env var); never hardcoded.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional, Union
 
 from pydantic import ValidationError
@@ -69,27 +70,39 @@ SYSTEM_PROMPT = (
     "    * 'entries' - titled entries in `entries`; use for projects, references, "
     "certificates, competitions, awards. Each entry: `title` (bold lead - a project/"
     "certificate/award name, or a reference's person name), optional `detail` (a "
-    "description, or a reference's 'Title, Company'), optional `date_range`; for a "
-    "reference put phone in `phone` and email in `email` (verbatim); use `url` to link "
-    "the title (e.g. a project repo) and `links` for any extra links.\n"
+    "description, or a reference's 'Title, Company'), optional `date_range`. For a "
+    "reference, put phone in `phone`, email in `email`, and any website/profile in "
+    "`links` (all verbatim) - do NOT put a reference's website in `url` (that hides it "
+    "behind the name). Use `url` ONLY to make a project/certificate title itself a link.\n"
     "    * 'text' - a single paragraph; put it in `text`.\n"
+    "  If a section ends with a short standalone note (e.g. 'References available on "
+    "request.', a validation-letter remark), put that note in the section's `note` field.\n"
     "- Experience/education entries: record every descriptive line. Put each separate "
     "line/bullet as its own string in `highlights`; use `description` only for one flowing "
-    "paragraph; put a role's explicit technologies line into `tech_stack`.\n"
+    "paragraph.\n"
+    "- For EVERY experience role AND sub-role, fill `tech_stack` with the technologies, "
+    "tools, frameworks, platforms and programming languages used in that role. Extract them "
+    "even when they are embedded inside the description or the bullets - not only when the "
+    "CV prints a separate technologies line. Include only technologies actually named in "
+    "that role's text; leave `tech_stack` empty only when the role names none.\n"
     "- Experience shape: a normal role sets `title` and leaves `sub_roles` empty. An "
     "umbrella employer (an agency hosting several client roles) sets `sub_roles` and "
     "leaves its own top-level `title` empty.\n"
     "- `headline`: fill it ONLY if the CV literally shows a short title/role line under "
     "the name. If there is no such line, leave `headline` empty - do NOT infer or invent "
     "one from the person's degree or job titles.\n"
-    "- `summary`: the profile / objective / cover-letter paragraph, transcribed faithfully "
-    "(do not shorten it).\n"
+    "- `summary`: the profile / objective / cover-letter / about paragraph shown at the top, "
+    "transcribed faithfully (do not shorten it). Put this text in `summary` even when the CV "
+    "gives it a heading (e.g. 'ÖNYAZI', 'Cover Letter', 'Profile', 'About') - do NOT make it a "
+    "section.\n"
     "- Set `language` to the ISO 639-1 code of the CV's primary language ('tr', 'en', "
     "...); it sets the EXPERIENCE / EDUCATION heading language.\n"
-    "- Do NOT fabricate URLs. Fill a `url` or a link only when the text contains a REAL "
-    "one. Hyperlinks appear inline as `anchor text <https://the-real-url>`; use that exact "
-    "URL, with the anchor as the label. If the CV shows 'LinkedIn'/'GitHub' (or any label) "
-    "as plain text with NO url, do NOT invent one - omit the link entirely.\n"
+    "- NEVER invent a URL. A link is allowed ONLY when the source shows the URL explicitly - "
+    "it appears inline as `anchor text <https://the-real-url>`; copy that exact URL and use "
+    "the anchor as the label. If a label like 'LinkedIn', 'GitHub', 'Portfolio' or 'Website' "
+    "appears with NO `<...>` URL after it, record NOTHING for it: do not add a link and do "
+    "NOT guess 'https://linkedin.com', 'https://github.com', or any similar URL. A profile "
+    "named without a URL is not a link.\n"
     "- Use ONLY information actually present. Never invent, guess, or embellish names, "
     "employers, dates, metrics, or descriptions. Do not reformat phone numbers.\n"
     "- Transcribe wording faithfully. You may fix obvious extraction artifacts (broken "
@@ -117,6 +130,44 @@ def _user_message(text: str, extra_instructions: Optional[str]) -> str:
     return "\n\n".join(parts)
 
 
+def _norm_url(u: str) -> str:
+    """Normalize a URL for a lenient 'is this in the source?' check: drop the
+    scheme, a leading ``www.`` and any trailing slash, then lowercase."""
+    u = u.strip().lower()
+    u = re.sub(r"^[a-z][a-z0-9+.\-]*://", "", u)
+    u = re.sub(r"^www\.", "", u)
+    return u.rstrip("/")
+
+
+def _strip_fabricated_urls(node: Any, source_lower: str) -> Any:
+    """Recursively drop URLs the model invented - any ``url`` whose (normalized)
+    value is not present in the source CV text.
+
+    Real URLs are copied from the inline ``anchor <https://...>`` markers, so they
+    appear in the source; hallucinated ones (e.g. ``https://linkedin.com`` for a
+    plain-text 'LinkedIn') do not. A bare ``Link`` (has a ``label``) with a
+    fabricated URL is removed outright; an optional ``url`` on a larger object is
+    just cleared (so the field becomes empty rather than a fake link).
+    """
+    def real(u: Any) -> bool:
+        return isinstance(u, str) and bool(u.strip()) and _norm_url(u) in source_lower
+
+    if isinstance(node, list):
+        out = []
+        for item in node:
+            if isinstance(item, dict) and "label" in item and not real(item.get("url")):
+                continue  # a Link whose URL is fabricated -> drop the whole link
+            out.append(_strip_fabricated_urls(item, source_lower))
+        return out
+    if isinstance(node, dict):
+        return {
+            k: _strip_fabricated_urls(v, source_lower)
+            for k, v in node.items()
+            if not (k == "url" and not real(v))  # clear a fabricated url field
+        }
+    return node
+
+
 def _format_errors(exc: Optional[ValidationError]) -> str:
     """Compact, model-readable rendering of pydantic validation errors."""
     if exc is None:
@@ -141,6 +192,7 @@ def extract_cv(
     max_tokens: int = DEFAULT_MAX_TOKENS,
     max_repair_attempts: int = 2,
     tool_choice: Any = None,
+    verify_urls: bool = True,
 ) -> CV:
     """Extract ``text`` into a validated :class:`CV` via forced tool use.
 
@@ -162,6 +214,10 @@ def extract_cv(
         max_repair_attempts: how many times to feed a validation error back and
             let the model correct its tool call (0 disables repair).
         tool_choice: override the provider's default forced tool selection.
+        verify_urls: drop any URL the model produced that is not present in
+            ``text`` (guards against fabricated links like ``https://linkedin.com``
+            for a plain-text 'LinkedIn'). On by default; pass ``False`` to keep the
+            model's URLs verbatim.
 
     Returns:
         A validated ``CV``.
@@ -179,6 +235,7 @@ def extract_cv(
     parameters = cv_tool_parameters()
     messages: List[Dict[str, Any]] = [prov.user_message(_user_message(text, extra_instructions))]
 
+    source_lower = text.lower() if verify_urls else ""
     last_error: Optional[ValidationError] = None
     for attempt in range(max_repair_attempts + 1):
         call = prov.call(
@@ -194,8 +251,11 @@ def extract_cv(
             detail = f" Model said: {call.text!r}" if call.text else ""
             raise ExtractionError(f"{prov.label} did not return a {TOOL_NAME!r} tool call.{detail}")
 
+        arguments = call.arguments
+        if verify_urls:
+            arguments = _strip_fabricated_urls(arguments, source_lower)
         try:
-            return CV.model_validate(call.arguments)
+            return CV.model_validate(arguments)
         except ValidationError as exc:
             last_error = exc
             if attempt >= max_repair_attempts:
@@ -255,8 +315,29 @@ if __name__ == "__main__":  # pragma: no cover
         }],
     }
 
-    cv = extract_cv("(fake CV text)", client=_FakeAnthropic([invalid, valid]), max_repair_attempts=2)
+    # verify_urls=False: the fake link URL isn't in the fake source, and here we're
+    # exercising the repair loop, not the URL guard (which has its own asserts below).
+    cv = extract_cv("(fake CV text)", client=_FakeAnthropic([invalid, valid]),
+                    max_repair_attempts=2, verify_urls=False)
     print("repair loop recovered ->", cv.name, "|", cv.experience[0].company,
           "| link:", cv.contact.links[0].url)
     assert cv.name == "Jordan Mercer" and cv.experience[0].company == "PayNova"
     print("OK")
+
+    # URL guard: fabricated links dropped, real ones (present in source) kept.
+    src = "Necmettin\nGitHub <https://github.com/NecmettinG>\nLinkedIn | GitHub".lower()
+    args = {
+        "name": "X",
+        "contact": {"links": [
+            {"label": "GitHub", "url": "https://github.com/NecmettinG"},   # real -> keep
+            {"label": "LinkedIn", "url": "https://linkedin.com"},          # fabricated -> drop
+        ]},
+        "education": [{"institution": "U", "url": "https://fake.example/nope"}],  # fabricated -> clear
+        "sections": [{"title": "Refs", "kind": "entries",
+                      "entries": [{"title": "Kayhan", "url": "https://linkedin.com/in/x"}]}],
+    }
+    cleaned = _strip_fabricated_urls(args, src)
+    assert [l["label"] for l in cleaned["contact"]["links"]] == ["GitHub"], cleaned["contact"]
+    assert "url" not in cleaned["education"][0]
+    assert "url" not in cleaned["sections"][0]["entries"][0]
+    print("URL guard OK (kept real link; dropped fabricated link + url fields)")
