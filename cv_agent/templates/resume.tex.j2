@@ -12,7 +12,12 @@
 
 \usepackage[a4paper,top=1.5cm,bottom=1.5cm,left=2cm,right=2cm]{geometry}
 
+% fontspec alone already gives XeTeX a Unicode-capable default (Latin Modern,
+% which covers Turkish). The block below upgrades to Termes + a symbol fallback;
+% render.py re-renders with fallback=true (dropping this block) if the rich
+% setup fails to compile, e.g. a font file cannot be resolved on a bare host.
 \usepackage{fontspec}
+\BLOCK{ if not fallback }
 \setmainfont{texgyretermes}[
   Extension      = .otf,
   UprightFont    = *-regular,
@@ -25,6 +30,7 @@
 \usepackage{newunicodechar}
 \newfontfamily\fallbacksymbol{DejaVuSans}[Extension=.ttf]
 \newunicodechar{₺}{{\fallbacksymbol ₺}}
+\BLOCK{ endif }
 
 \usepackage[normalem]{ulem}   % wrap-safe underlines for links
 \usepackage{enumitem}
@@ -51,7 +57,9 @@
   \hrule height 0.6pt%
   \vspace{6pt}%
 }
-\newcommand{\ulink}[2]{\href{#1}{\uline{#2}}}
+% Links are emitted inline as \href{url}{\uline{label}} (not wrapped in a macro):
+% hyperref's URL normaliser only handles specials (%, #, ~, ...) when \href reads
+% the raw URL directly from the source, which an undelimited macro arg would break.
 \newcommand{\rolehead}[2]{\noindent\textbf{#1}\hfill #2\par}
 \newcommand{\subhead}[1]{\noindent\textbf{#1}\par}
 \newcommand{\techline}[1]{\noindent\textit{#1}\par}
@@ -68,9 +76,9 @@
 \BLOCK{ endif }
 \BLOCK{ set ns = namespace(parts=[]) }
 \BLOCK{ if cv.contact.location }\BLOCK{ set ns.parts = ns.parts + [cv.contact.location | e] }\BLOCK{ endif }
-\BLOCK{ if cv.contact.phone }\BLOCK{ set ns.parts = ns.parts + ['\\ulink{tel:' ~ cv.contact.phone ~ '}{' ~ (cv.contact.phone | e) ~ '}'] }\BLOCK{ endif }
-\BLOCK{ if cv.contact.email }\BLOCK{ set ns.parts = ns.parts + ['\\ulink{mailto:' ~ cv.contact.email ~ '}{' ~ (cv.contact.email | e) ~ '}'] }\BLOCK{ endif }
-\BLOCK{ for l in cv.contact.links }\BLOCK{ set ns.parts = ns.parts + ['\\ulink{' ~ l.url ~ '}{' ~ (l.label | e) ~ '}'] }\BLOCK{ endfor }
+\BLOCK{ if cv.contact.phone }\BLOCK{ set ns.parts = ns.parts + ['\\href{tel:' ~ cv.contact.phone ~ '}{\\uline{' ~ (cv.contact.phone | e) ~ '}}'] }\BLOCK{ endif }
+\BLOCK{ if cv.contact.email }\BLOCK{ set ns.parts = ns.parts + ['\\href{mailto:' ~ cv.contact.email ~ '}{\\uline{' ~ (cv.contact.email | e) ~ '}}'] }\BLOCK{ endif }
+\BLOCK{ for l in cv.contact.links }\BLOCK{ set ns.parts = ns.parts + ['\\href{' ~ l.url ~ '}{\\uline{' ~ (l.label | e) ~ '}}'] }\BLOCK{ endfor }
 \BLOCK{ if ns.parts }
   {\VAR{ ns.parts | join(' – ') }}\\[3pt]
 \BLOCK{ endif }
@@ -100,7 +108,7 @@
   \techline{\VAR{ sr.tech_stack | join(', ') | e }}
 \BLOCK{ endif }
 \BLOCK{ if sr.description or sr.links }
-  \descpar{\VAR{ sr.description | e }\BLOCK{ if sr.links } \BLOCK{ for l in sr.links }\ulink{\VAR{ l.url }}{\VAR{ l.label | e }}\BLOCK{ if not loop.last }, \BLOCK{ endif }\BLOCK{ endfor }\BLOCK{ endif }}
+  \descpar{\VAR{ sr.description | e }\BLOCK{ if sr.links } \BLOCK{ for l in sr.links }\href{\VAR{ l.url }}{\uline{\VAR{ l.label | e }}}\BLOCK{ if not loop.last }, \BLOCK{ endif }\BLOCK{ endfor }\BLOCK{ endif }}
 \BLOCK{ endif }
 \BLOCK{ if sr.highlights }
 \begin{itemize}
@@ -120,7 +128,7 @@
 \techline{\VAR{ entry.tech_stack | join(', ') | e }}
 \BLOCK{ endif }
 \BLOCK{ if entry.description or entry.links }
-\descpar{\VAR{ entry.description | e }\BLOCK{ if entry.links } \BLOCK{ for l in entry.links }\ulink{\VAR{ l.url }}{\VAR{ l.label | e }}\BLOCK{ if not loop.last }, \BLOCK{ endif }\BLOCK{ endfor }\BLOCK{ endif }}
+\descpar{\VAR{ entry.description | e }\BLOCK{ if entry.links } \BLOCK{ for l in entry.links }\href{\VAR{ l.url }}{\uline{\VAR{ l.label | e }}}\BLOCK{ if not loop.last }, \BLOCK{ endif }\BLOCK{ endfor }\BLOCK{ endif }}
 \BLOCK{ endif }
 \BLOCK{ if entry.highlights }
 \begin{itemize}
@@ -141,7 +149,7 @@
 \cvsection{\VAR{ t.education | uc(cv.language) }}
 \BLOCK{ for edu in cv.education }
 \BLOCK{ if edu.url }
-\noindent\textbf{\ulink{\VAR{ edu.url }}{\VAR{ edu.institution | e }}}\hfill \VAR{ edu.location | e }\\
+\noindent\textbf{\href{\VAR{ edu.url }}{\uline{\VAR{ edu.institution | e }}}}\hfill \VAR{ edu.location | e }\\
 \BLOCK{ else }
 \noindent\textbf{\VAR{ edu.institution | e }}\hfill \VAR{ edu.location | e }\\
 \BLOCK{ endif }
@@ -154,7 +162,7 @@
 \BLOCK{ if edu.links }
 \begin{itemize}
 \BLOCK{ for l in edu.links }
-  \item \ulink{\VAR{ l.url }}{\VAR{ l.label | e }}
+  \item \href{\VAR{ l.url }}{\uline{\VAR{ l.label | e }}}
 \BLOCK{ endfor }
 \end{itemize}
 \BLOCK{ endif }
@@ -162,7 +170,7 @@
 \BLOCK{ elif edu.links }
 \begin{itemize}
 \BLOCK{ for l in edu.links }
-  \item \ulink{\VAR{ l.url }}{\VAR{ l.label | e }}
+  \item \href{\VAR{ l.url }}{\uline{\VAR{ l.label | e }}}
 \BLOCK{ endfor }
 \end{itemize}
 \BLOCK{ endif }
@@ -186,12 +194,12 @@
 \end{multicols}
 \BLOCK{ elif section.kind == 'entries' and section.entries }
 \BLOCK{ for e in section.entries }
-\BLOCK{ if e.url }\rolehead{\ulink{\VAR{ e.url }}{\VAR{ e.title | e }}}{\VAR{ e.date_range | range_a(cv.language) }}\BLOCK{ else }\rolehead{\VAR{ e.title | e }}{\VAR{ e.date_range | range_a(cv.language) }}\BLOCK{ endif }
+\BLOCK{ if e.url }\rolehead{\href{\VAR{ e.url }}{\uline{\VAR{ e.title | e }}}}{\VAR{ e.date_range | range_a(cv.language) }}\BLOCK{ else }\rolehead{\VAR{ e.title | e }}{\VAR{ e.date_range | range_a(cv.language) }}\BLOCK{ endif }
 \BLOCK{ if e.detail }\descpar{\VAR{ e.detail | e }}\BLOCK{ endif }
 \BLOCK{ set ec = namespace(parts=[]) }
-\BLOCK{ if e.phone }\BLOCK{ set ec.parts = ec.parts + ['\\ulink{tel:' ~ e.phone ~ '}{' ~ (e.phone | e) ~ '}'] }\BLOCK{ endif }
-\BLOCK{ if e.email }\BLOCK{ set ec.parts = ec.parts + ['\\ulink{mailto:' ~ e.email ~ '}{' ~ (e.email | e) ~ '}'] }\BLOCK{ endif }
-\BLOCK{ for l in e.links }\BLOCK{ set ec.parts = ec.parts + ['\\ulink{' ~ l.url ~ '}{' ~ (l.label | e) ~ '}'] }\BLOCK{ endfor }
+\BLOCK{ if e.phone }\BLOCK{ set ec.parts = ec.parts + ['\\href{tel:' ~ e.phone ~ '}{\\uline{' ~ (e.phone | e) ~ '}}'] }\BLOCK{ endif }
+\BLOCK{ if e.email }\BLOCK{ set ec.parts = ec.parts + ['\\href{mailto:' ~ e.email ~ '}{\\uline{' ~ (e.email | e) ~ '}}'] }\BLOCK{ endif }
+\BLOCK{ for l in e.links }\BLOCK{ set ec.parts = ec.parts + ['\\href{' ~ l.url ~ '}{\\uline{' ~ (l.label | e) ~ '}}'] }\BLOCK{ endfor }
 \BLOCK{ if ec.parts }\contactline{\VAR{ ec.parts | join(' \\textbullet{} ') }}\BLOCK{ endif }
 \BLOCK{ if e.highlights }
 \begin{itemize}

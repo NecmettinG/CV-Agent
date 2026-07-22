@@ -182,17 +182,23 @@ def build_environment(templates_dir: Path = TEMPLATES_DIR) -> Environment:
 _ENV: Optional[Environment] = None
 
 
-def render_cv(cv: CV, template_name: str) -> str:
+def render_cv(cv: CV, template_name: str, *, fallback: bool = False) -> str:
     """Render ``cv`` through ``template_name`` and return the LaTeX source.
 
     The fixed EXPERIENCE/EDUCATION headings and the ongoing date word come from
     ``t`` (the label set for ``cv.language``); every other section heading is the
-    section's own ``title``, uppercased by the ``uc`` filter."""
+    section's own ``title``, uppercased by the ``uc`` filter.
+
+    ``fallback`` selects a stripped-down preamble (no custom fonts / symbol
+    fallback, just ``fontspec``'s Unicode-capable default): :mod:`cv_agent.render`
+    re-renders with ``fallback=True`` and recompiles when the rich layout fails,
+    so a font-resolution problem degrades gracefully instead of erroring out."""
     global _ENV
     if _ENV is None:
         _ENV = build_environment()
     return _ENV.get_template(template_name).render(
-        cv=cv, t=labels_for(cv.language), summary_threshold=SUMMARY_SECTION_THRESHOLD
+        cv=cv, t=labels_for(cv.language),
+        summary_threshold=SUMMARY_SECTION_THRESHOLD, fallback=fallback,
     )
 
 
