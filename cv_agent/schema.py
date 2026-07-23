@@ -239,6 +239,10 @@ class SectionEntry(_Base):
         default=None,
         description="Text under the title: a description, or a reference's 'Title, Company'.",
     )
+    tech_stack: List[str] = Field(
+        default_factory=list,
+        description="Italic tech/skills line for a project-style entry (technologies used).",
+    )
     date_range: Optional[DateRange] = Field(
         default=None, description="Optional date/year, shown on the right."
     )

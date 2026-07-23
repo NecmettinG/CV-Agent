@@ -9,11 +9,16 @@ from cv_agent.ats import (
     AtsError,
     AtsReport,
     Keyword,
+    add_declared_skills,
+    apply_keyword_decisions,
     ats_report,
     extract_job_keywords,
     improve_cv,
     keyword_coverage,
+    newly_surfaced_keywords,
     roundtrip_parse,
+    weavable_entries,
+    weave_skills,
 )
 from cv_agent.extract import ExtractionError, extract_cv
 from cv_agent.pipeline import cv_from_file, file_to_pdf, parse_file
@@ -66,6 +71,11 @@ __all__ = [
     "Keyword",
     "roundtrip_parse",
     "keyword_coverage",
+    "newly_surfaced_keywords",
+    "apply_keyword_decisions",
+    "add_declared_skills",
+    "weavable_entries",
+    "weave_skills",
     "extract_job_keywords",
     "improve_cv",
 ]

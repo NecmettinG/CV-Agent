@@ -195,6 +195,7 @@
 \BLOCK{ elif section.kind == 'entries' and section.entries }
 \BLOCK{ for e in section.entries }
 \BLOCK{ if e.url }\rolehead{\href{\VAR{ e.url }}{\uline{\VAR{ e.title | e }}}}{\VAR{ e.date_range | range_a(cv.language) }}\BLOCK{ else }\rolehead{\VAR{ e.title | e }}{\VAR{ e.date_range | range_a(cv.language) }}\BLOCK{ endif }
+\BLOCK{ if e.tech_stack }\techline{\VAR{ e.tech_stack | join(', ') | e }}\BLOCK{ endif }
 \BLOCK{ if e.detail }\descpar{\VAR{ e.detail | e }}\BLOCK{ endif }
 \BLOCK{ set ec = namespace(parts=[]) }
 \BLOCK{ if e.phone }\BLOCK{ set ec.parts = ec.parts + ['\\href{tel:' ~ e.phone ~ '}{\\uline{' ~ (e.phone | e) ~ '}}'] }\BLOCK{ endif }

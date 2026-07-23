@@ -32,7 +32,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from cv_agent.ats import ats_report, extract_job_keywords, improve_cv
+from cv_agent.ats import (
+    add_declared_skills,
+    apply_keyword_decisions,
+    ats_report,
+    extract_job_keywords,
+    improve_cv,
+    keyword_coverage,
+    newly_surfaced_keywords,
+    weavable_entries,
+    weave_skills,
+)
 from cv_agent.pipeline import SUPPORTED_SUFFIXES, parse_file
 from cv_agent.providers import PRESETS, resolve_provider_name
 from cv_agent.render import render_pdf
@@ -138,11 +148,71 @@ def main() -> None:
         key = _api_key(name, preset.env_var)
         print(f"\n[5] Rewriting toward the JD keywords with {name} / {model} (guarded) ...")
         improved = improve_cv(cv, keywords, provider=name, model=model, api_key=key)
+
+        # Truthfulness gate: grafting keeps your facts, but the reworded prose can
+        # reach for a target keyword your CV never supported. Confirm each such term
+        # with you BEFORE it goes into the PDF; a rejected one has its field reverted
+        # to your original wording so it disappears cleanly.
+        surfaced = newly_surfaced_keywords(cv, improved, keywords)
+        if surfaced:
+            print("\n    The rewrite introduced these keywords that were NOT in your original CV.")
+            if sys.stdin.isatty():
+                print("    Keep each ONLY if you genuinely have it (answer y); anything else removes it.\n")
+                rejected = []
+                for k in surfaced:
+                    ans = input(f"      Keep '{k.text}' ({k.importance})?  [y/N]: ").strip().lower()
+                    if ans not in ("y", "yes"):
+                        rejected.append(k.text)
+                if rejected:
+                    improved = apply_keyword_decisions(cv, improved, rejected)
+                    print(f"\n    Removed (reverted their wording to your original): "
+                          f"{', '.join(rejected)}")
+                else:
+                    print("\n    Kept all.")
+            else:
+                # Non-interactive (piped): don't guess - keep them but warn loudly.
+                for k in surfaced:
+                    print(f"      [!] verify: {k.text} ({k.importance})")
+        else:
+            print("\n    No keywords were introduced beyond what your CV already contained.")
+
+        # Gap-closer: offer to add job keywords the CV still lacks but you GENUINELY
+        # have. You affirm each (you are the source of truth about your own experience),
+        # so it is truthful, not fabrication. Confirmed skills go to your Skills
+        # section, and you can attach each to a specific role/project's tech line.
+        missing = keyword_coverage(improved, keywords).missing
+        if missing and sys.stdin.isatty():
+            print("\n    These job keywords are still missing. Add ONLY the ones you genuinely have:")
+            confirmed = [k.text for k in missing
+                         if input(f"      Do you genuinely have '{k.text}'?  [y/N]: ")
+                         .strip().lower() in ("y", "yes")]
+            if confirmed:
+                improved = add_declared_skills(improved, confirmed)
+                print(f"\n    Added to your Skills section: {', '.join(confirmed)}")
+
+                targets = weavable_entries(improved)
+                if targets:
+                    print("\n    Optionally attach a skill to a specific role/project (its tech line):")
+                    for idx, (label, _) in enumerate(targets, 1):
+                        print(f"        {idx}. {label}")
+                    assignments = []
+                    for skill in confirmed:
+                        raw = input(f"      Attach '{skill}' to which number(s)?  "
+                                    "(comma-separated, Enter to skip): ").strip()
+                        picks = [int(p) for p in raw.replace(",", " ").split()
+                                 if p.isdigit() and 1 <= int(p) <= len(targets)]
+                        for p in picks:
+                            assignments.append((targets[p - 1][1], [skill]))
+                    if assignments:
+                        improved = weave_skills(improved, assignments)
+                        print(f"    Attached {len(assignments)} skill placement(s) to their tech lines.")
+
+        # Render the FINAL improved CV (after your keep/remove/add decisions).
         imp_pdf = render_pdf(improved, output_dir=args.output_dir,
                              basename=(pdf.stem + "-improved"))
         after = ats_report(improved, pdf_path=imp_pdf, keywords=keywords,
                            x_tolerance=args.x_tolerance)
-        print(f"    Rendered improved CV -> {imp_pdf}")
+        print(f"\n    Rendered improved CV -> {imp_pdf}")
         print(f"    Keyword match: {report.keyword_score} -> {after.keyword_score}  "
               f"(overall {report.overall} -> {after.overall})")
 

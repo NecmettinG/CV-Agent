@@ -36,12 +36,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from cv_agent.providers import Provider, build_provider, dereference_schema
-from cv_agent.schema import CV
+from cv_agent.schema import CV, Section
 
 # --------------------------------------------------------------------------- #
 # Scoring weights - all in one place so the rubric is explicit and tunable.
@@ -308,6 +308,172 @@ def keyword_coverage(cv: CV, keywords: List[Keyword]) -> CoverageReport:
     text_lower = cv_searchable_text(cv).lower()
     hits = [KeywordHit(k, keyword_present(k.text, text_lower)) for k in keywords]
     return CoverageReport(hits)
+
+
+def newly_surfaced_keywords(original: CV, improved: CV,
+                            keywords: List[Keyword]) -> List[Keyword]:
+    """Keywords present in ``improved`` but ABSENT from ``original`` - i.e. terms an
+    :func:`improve_cv` rewrite introduced.
+
+    These are the claims a human must verify: grafting keeps the CV's facts intact,
+    but the reworded prose can reach for a target keyword the source never supported
+    (e.g. adding 'Gradle' or 'microservices'). Anything listed here should be kept
+    ONLY if the candidate genuinely has it, and removed otherwise. It compares only
+    against the supplied ``keywords`` (the optimization targets, where the risk is).
+    """
+    before = cv_searchable_text(original).lower()
+    after = cv_searchable_text(improved).lower()
+    return [k for k in keywords
+            if keyword_present(k.text, after) and not keyword_present(k.text, before)]
+
+
+def apply_keyword_decisions(original: CV, improved: CV, rejected: List[str]) -> CV:
+    """Remove ``rejected`` keywords from an :func:`improve_cv` result cleanly.
+
+    For each grafted prose field (summary, experience descriptions/highlights and
+    their sub-roles', skills-section bullets) that contains a rejected keyword,
+    revert THAT field to ``original``'s wording. Because the rejected terms were
+    'newly surfaced' (absent from ``original``), they can only live in grafted
+    fields, so reverting those fields removes every occurrence - deterministically,
+    grammatically (original text is well-formed), and with no extra model call.
+
+    ``improved`` must be an :func:`improve_cv` result of ``original`` (same
+    structure). Returns a new CV; ``improved`` is not mutated.
+    """
+    rej = [r.strip().lower() for r in rejected if r and r.strip()]
+    if not rej:
+        return improved
+    result = improved.model_copy(deep=True)
+
+    def tainted(text: Optional[str]) -> bool:
+        low = (text or "").lower()
+        return any(keyword_present(r, low) for r in rej)
+
+    if tainted(result.summary):
+        result.summary = original.summary
+
+    if len(result.experience) == len(original.experience):
+        for e, oe in zip(result.experience, original.experience):
+            if tainted(e.description):
+                e.description = oe.description
+            if any(tainted(h) for h in e.highlights):
+                e.highlights = list(oe.highlights)
+            if len(e.sub_roles) == len(oe.sub_roles):
+                for sr, osr in zip(e.sub_roles, oe.sub_roles):
+                    if tainted(sr.description):
+                        sr.description = osr.description
+                    if any(tainted(h) for h in sr.highlights):
+                        sr.highlights = list(osr.highlights)
+
+    if len(result.sections) == len(original.sections):
+        for s, os_ in zip(result.sections, original.sections):
+            if s.kind == "skills" and any(tainted(b) for b in s.bullets):
+                s.bullets = list(os_.bullets)
+
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# Gap-closer: add skills the CANDIDATE affirms they genuinely have.
+#
+# The rewrite (improve_cv) can only surface keywords already implied in the text.
+# A skill the candidate genuinely has but never wrote down stays invisible - and
+# the guard rightly won't let the model assert it. The honest fix: let the person
+# DECLARE such skills (they are the source of truth about their own experience) and
+# record them - to the Skills section, and optionally onto a specific role/project's
+# tech line. All deterministic: the tool never invents, it only writes down what the
+# user affirmed.
+# --------------------------------------------------------------------------- #
+def add_declared_skills(cv: CV, skills: List[str], *, section_title: str = "Skills") -> CV:
+    """Add candidate-affirmed ``skills`` to the CV's skills section.
+
+    Appends each skill (deduped, case-insensitively) to the first ``kind='skills'``
+    section, creating one titled ``section_title`` if the CV has none. Truthful by
+    construction - the candidate declares these; the tool only records them. Returns
+    a new CV; ``cv`` is not mutated.
+    """
+    additions = [s.strip() for s in skills if s and s.strip()]
+    if not additions:
+        return cv
+    result = cv.model_copy(deep=True)
+    target = next((s for s in result.sections if s.kind == "skills"), None)
+    if target is None:
+        target = Section(title=section_title, kind="skills", bullets=[])
+        result.sections.append(target)
+    have = {b.strip().lower() for b in target.bullets}
+    for s in additions:
+        if s.lower() not in have:
+            target.bullets.append(s)
+            have.add(s.lower())
+    return result
+
+
+#: Section-title markers (any language) that mark a references section, whose
+#: entries are people - never a place to attach a skill. 'referans' covers the
+#: Turkish 'Referanslar'; 'reference' covers 'References'.
+_REFERENCE_TITLE_MARKERS = ("reference", "referans")
+
+
+def _is_reference_section(title: str) -> bool:
+    low = (title or "").lower()
+    return any(m in low for m in _REFERENCE_TITLE_MARKERS)
+
+
+def weavable_entries(cv: CV) -> List[Tuple[str, tuple]]:
+    """``(label, locator)`` for every entry a declared skill can be attached to:
+    each experience role / umbrella sub-role, and each project-style section entry.
+
+    References are skipped - a skill does not belong on a reference - both by
+    SECTION TITLE ('References'/'Referanslar') and, as a fallback, any single entry
+    that carries an email/phone. The opaque ``locator`` tuples are consumed by
+    :func:`weave_skills`.
+    """
+    out: List[Tuple[str, tuple]] = []
+    for i, e in enumerate(cv.experience):
+        if e.sub_roles:
+            for j, sr in enumerate(e.sub_roles):
+                out.append((f"{e.company} / {sr.company} - {sr.title}", ("exp", i, "sub", j)))
+        else:
+            out.append(((f"{e.company} - {e.title}" if e.title else e.company), ("exp", i)))
+    for si, s in enumerate(cv.sections):
+        if s.kind == "entries" and not _is_reference_section(s.title):
+            for ei, en in enumerate(s.entries):
+                if en.email or en.phone:  # a stray reference-like entry
+                    continue
+                out.append((f"[{s.title}] {en.title}", ("sec", si, ei)))
+    return out
+
+
+def _resolve_locator(cv: CV, locator: tuple):
+    """Return the entry object a ``weavable_entries`` locator points to."""
+    if locator[0] == "exp":
+        e = cv.experience[locator[1]]
+        if len(locator) >= 4 and locator[2] == "sub":
+            return e.sub_roles[locator[3]]
+        return e
+    if locator[0] == "sec":
+        return cv.sections[locator[1]].entries[locator[2]]
+    raise ValueError(f"bad locator {locator!r}")
+
+
+def weave_skills(cv: CV, assignments: List[Tuple[tuple, List[str]]]) -> CV:
+    """Attach declared skills to specific entries' tech lines (deterministic).
+
+    ``assignments`` pairs a locator (from :func:`weavable_entries`) with the skills
+    to add to that entry's ``tech_stack`` (deduped, case-insensitively). Experience
+    entries, sub-roles, and project-style section entries all carry a ``tech_stack``.
+    Returns a new CV; ``cv`` is not mutated.
+    """
+    result = cv.model_copy(deep=True)
+    for locator, skills in assignments:
+        target = _resolve_locator(result, locator)
+        have = {t.strip().lower() for t in target.tech_stack}
+        for s in skills:
+            s = s.strip()
+            if s and s.lower() not in have:
+                target.tech_stack.append(s)
+                have.add(s.lower())
+    return result
 
 
 # --------------------------------------------------------------------------- #
@@ -876,5 +1042,52 @@ if __name__ == "__main__":  # pragma: no cover
     assert out3.education[0].institution == sample_cv.education[0].institution
     assert out3.experience[0].highlights == ["Built CI/CD pipelines with Java."]
     print("skeleton tampering ignored; prose grafted OK")
+
+    # --- newly-surfaced keyword flag (terms to verify) ------------------------
+    imp = sample_cv.model_copy(deep=True)
+    imp.experience[0].highlights = ["Built GraphQL APIs."]   # GraphQL absent from original
+    flagged = newly_surfaced_keywords(sample_cv, imp, kws)
+    assert [k.text for k in flagged] == ["GraphQL"], flagged   # Java etc. already present
+    print("surfaced-keyword flag OK ->", [k.text for k in flagged])
+
+    # --- apply_keyword_decisions: rejecting a term reverts its field cleanly ----
+    imp2 = sample_cv.model_copy(deep=True)
+    imp2.summary = "Backend engineer skilled in Java, AWS and GraphQL."  # GraphQL absent
+    kept = apply_keyword_decisions(sample_cv, imp2, rejected=["GraphQL"])
+    assert kept.summary == sample_cv.summary                # tainted field reverted
+    assert not newly_surfaced_keywords(sample_cv, kept, kws)  # GraphQL fully gone
+    # a field WITHOUT a rejected term is left as improved
+    imp3 = sample_cv.model_copy(deep=True)
+    imp3.summary = "Backend engineer skilled in Java and Kubernetes."
+    kept3 = apply_keyword_decisions(sample_cv, imp3, rejected=["GraphQL"])
+    assert kept3.summary == imp3.summary                    # untouched (no rejected term)
+    print("apply_keyword_decisions OK (rejected reverted, others kept)")
+
+    # --- declare + attach genuine skills (deterministic gap-closer) -----------
+    with_skill = add_declared_skills(sample_cv, ["GraphQL", "graphql"])  # dup folded
+    sk = next(s for s in with_skill.sections if s.kind == "skills")
+    assert sk.bullets.count("GraphQL") == 1, sk.bullets
+    print("add_declared_skills OK")
+
+    targets = weavable_entries(sample_cv)
+    labels = [lab for lab, _ in targets]
+    assert any("SmartShop" in lab for lab in labels), labels          # project present
+    assert not any("Alex Thompson" in lab for lab in labels), labels  # reference skipped
+
+    # a references section is skipped by TITLE even when its entries carry no
+    # email/phone (the case that used to leak into the attach menu).
+    from cv_agent.schema import SectionEntry as _SE
+    cv_ref = sample_cv.model_copy(deep=True)
+    cv_ref.sections.append(Section(title="Referanslar", kind="entries",
+                                   entries=[_SE(title="Ada Lovelace")]))  # no email/phone
+    assert not any("Ada Lovelace" in lab for lab, _ in weavable_entries(cv_ref))
+    print("reference section skipped by title OK")
+    proj_loc = next(loc for lab, loc in targets if "SmartShop" in lab)
+    exp_loc = next(loc for lab, loc in targets if lab.startswith("PayNova"))
+    woven = weave_skills(sample_cv, [(proj_loc, ["GraphQL"]), (exp_loc, ["GraphQL"])])
+    smartshop = next(en for s in woven.sections for en in s.entries if en.title == "SmartShop")
+    assert "GraphQL" in smartshop.tech_stack                          # onto project tech line
+    assert "GraphQL" in woven.experience[0].tech_stack                # onto role tech line
+    print("weavable_entries + weave_skills OK")
 
     print("OK")
