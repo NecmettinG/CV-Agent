@@ -259,8 +259,9 @@ class Preset:
 
 PRESETS: Dict[str, Preset] = {
     "anthropic": Preset(
-        "anthropic", "claude-opus-4-8", "ANTHROPIC_API_KEY",
-        cost="Paid. Most reliable tool use (default).",
+        "anthropic", "claude-haiku-4-5-20251001", "ANTHROPIC_API_KEY",
+        cost="Paid, cheap + fast (default). Reliable tool use; Opus/Sonnet are "
+             "stronger for hard CVs - pass --model / pick it in Settings.",
     ),
     "openai": Preset(
         "openai", "gpt-4o-mini", "OPENAI_API_KEY",

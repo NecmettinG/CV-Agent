@@ -133,9 +133,25 @@ support bundle (fonts/packages) over the network; later runs are offline.
 
 ## Quick start
 
-The `examples/` scripts drive the whole pipeline from the command line. API keys are
-read from the provider’s env var if set, otherwise prompted (input hidden). Nothing
-is written except the output PDF(s).
+### Interactive mode (recommended)
+
+The easiest way to use CV-Agent — no flags to remember:
+
+```bash
+python -m cv_agent
+```
+
+This opens a terminal UI with menus for picking a **provider and model**, choosing an
+**action** (convert / score / improve), and selecting a **CV from an auto-discovered
+list**. The guarded improvement gates run inline. API keys are read from the
+provider’s env var if set, otherwise prompted once (hidden) and cached for the
+session only.
+
+### Command-line scripts
+
+For scripting or one-off runs, the `examples/` scripts drive the same pipeline
+non-interactively. Keys are handled the same way; nothing is written except the
+output PDF(s).
 
 **Extract a CV and render it to PDF:**
 
@@ -149,7 +165,7 @@ python examples/extract_demo.py --list-providers
 
 ```bash
 # format + round-trip score only (no job description needed):
-python examples/ats_demo.py "my_cv.pdf" --provider anthropic --model claude-haiku-4-5-20251001
+python examples/ats_demo.py "my_cv.pdf" --provider anthropic   # defaults to Haiku 4.5
 
 # add a job description for keyword coverage:
 python examples/ats_demo.py "my_cv.pdf" --jd job.txt --provider anthropic
@@ -168,8 +184,8 @@ python examples/ats_demo.py --sample
 ```python
 from cv_agent import file_to_pdf, cv_from_file, ats_report, improve_cv, extract_job_keywords
 
-# One call: file → LLM extract → PDF
-pdf_path = file_to_pdf("my_cv.pdf", provider="anthropic", model="claude-haiku-4-5-20251001")
+# One call: file → LLM extract → PDF  (defaults to Anthropic Haiku 4.5)
+pdf_path = file_to_pdf("my_cv.pdf", provider="anthropic")   # or model="claude-sonnet-5", etc.
 
 # Or step by step, then score against a job description
 cv = cv_from_file("my_cv.pdf", provider="anthropic")
@@ -196,7 +212,7 @@ tiers change — run `--list-providers` for the current defaults.)
 
 | Provider | Env var | Notes |
 |---|---|---|
-| `anthropic` | `ANTHROPIC_API_KEY` | Default. Most reliable tool-use. |
+| `anthropic` | `ANTHROPIC_API_KEY` | Default (Haiku 4.5 — cheap + fast). Pass `--model` for Opus/Sonnet on hard CVs. |
 | `openai` | `OPENAI_API_KEY` | Paid. |
 | `gemini` (`google`) | `GEMINI_API_KEY` | Free tier via Google AI Studio. |
 | `openrouter` | `OPENROUTER_API_KEY` | One key, many models incl. `:free` ones. |
