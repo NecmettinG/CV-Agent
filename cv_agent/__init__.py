@@ -5,6 +5,16 @@ string lives in :mod:`cv_agent.templating`; compiling a CV all the way to a PDF
 lives in :mod:`cv_agent.render` (:func:`render_pdf`).
 """
 
+from cv_agent.ats import (
+    AtsError,
+    AtsReport,
+    Keyword,
+    ats_report,
+    extract_job_keywords,
+    improve_cv,
+    keyword_coverage,
+    roundtrip_parse,
+)
 from cv_agent.extract import ExtractionError, extract_cv
 from cv_agent.pipeline import cv_from_file, file_to_pdf, parse_file
 from cv_agent.providers import PRESETS, Provider, build_provider
@@ -49,4 +59,13 @@ __all__ = [
     "render_cv",
     "render_pdf",
     "STYLE_A",
+    # ATS analysis (round-trip parse, keyword coverage, score, guarded rewrite)
+    "ats_report",
+    "AtsReport",
+    "AtsError",
+    "Keyword",
+    "roundtrip_parse",
+    "keyword_coverage",
+    "extract_job_keywords",
+    "improve_cv",
 ]
