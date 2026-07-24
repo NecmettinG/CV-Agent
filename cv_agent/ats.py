@@ -780,14 +780,17 @@ _REWRITE_SYSTEM = (
     "standard term.\n"
     "ABSOLUTE RULES:\n"
     "- NEVER add a skill, technology, tool, employer, role, achievement, date, or qualification "
-    "the candidate does not already demonstrate in the original CV. If there is no evidence for a "
-    "target keyword, DO NOT add it - a keyword the person lacks must stay missing. Fabrication is "
-    "a hard failure.\n"
+    "the candidate does not already demonstrate in the original CV - and this includes a BARE, "
+    "general, or related form of a target keyword. If a technology name is not written anywhere in "
+    "the original CV, do NOT put it into any summary or bullet (e.g. if the CV never says "
+    "'microservices', do not write 'microservices' or 'microservices integration' anywhere). If "
+    "there is no evidence for a target keyword, DO NOT add it - a keyword the person lacks must "
+    "stay missing. Fabrication is a hard failure.\n"
     "- Do NOT change, add, or remove any company name, job title, institution, or date, and keep "
     "the same experience / education / section structure and counts.\n"
-    "- You MAY: reword highlight bullets, descriptions and the summary; use the standard spelling "
-    "of a technology already implied (e.g. write 'CI/CD' where a bullet clearly describes it); and "
-    "move a technology already named in a bullet into that role's tech_stack.\n"
+    "- You MAY reword highlight bullets, descriptions and the summary, and use the standard "
+    "spelling of a technology already implied (e.g. write 'CI/CD' where a bullet clearly "
+    "describes it). Do NOT change the tech_stack lists.\n"
     "- Keep it truthful, concise, and natural - no keyword stuffing.\n"
     f"Return the full improved CV by calling `{_REWRITE_TOOL}` exactly once."
 )
@@ -832,18 +835,6 @@ def _faithfulness_violations(original: CV, improved: CV) -> List[str]:
     return problems
 
 
-def _merge_honest_tech(target: Any, source: Any, orig_text_lower: str) -> None:
-    """Append ``source``'s tech_stack items onto ``target``'s ONLY when the tech
-    already appears somewhere in the original CV text - honest surfacing into the
-    tech line (per the rewrite prompt), never fabrication. Mutates ``target``."""
-    have = {t.strip().lower() for t in target.tech_stack}
-    for t in source.tech_stack:
-        t = t.strip()
-        if t and t.lower() not in have and keyword_present(t, orig_text_lower):
-            target.tech_stack.append(t)
-            have.add(t.lower())
-
-
 def _graft_rewrite(original: CV, rewrite: CV) -> CV:
     """Build the improved CV from the ORIGINAL's factual skeleton + the model's
     reworded prose. Only the summary, each experience's description/highlights (and
@@ -856,7 +847,6 @@ def _graft_rewrite(original: CV, rewrite: CV) -> CV:
     dates or to add a new skill line, no matter what the model returned.
     """
     result = original.model_copy(deep=True)
-    orig_text = cv_searchable_text(original).lower()
 
     if rewrite.summary and rewrite.summary.strip():
         result.summary = rewrite.summary
@@ -869,14 +859,12 @@ def _graft_rewrite(original: CV, rewrite: CV) -> CV:
             # stops the model padding a role with fabricated highlight bullets.
             if n.highlights and len(n.highlights) == len(o.highlights):
                 o.highlights = n.highlights
-            _merge_honest_tech(o, n, orig_text)   # surface genuinely-present tech
             if len(o.sub_roles) == len(n.sub_roles):
                 for os_, ns_ in zip(o.sub_roles, n.sub_roles):
                     if ns_.description and ns_.description.strip():
                         os_.description = ns_.description
                     if ns_.highlights and len(ns_.highlights) == len(os_.highlights):
                         os_.highlights = ns_.highlights
-                    _merge_honest_tech(os_, ns_, orig_text)
 
     # Skills lines may be reworded (e.g. normalize spelling) but not added/removed,
     # so the count must match - this stops the model padding skills with keywords.

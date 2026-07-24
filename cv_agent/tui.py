@@ -431,9 +431,9 @@ def action_score(s: Session) -> None:
 def _run_gates(s: Session, cv, keywords, key):
     """The guarded improvement: rewrite + remove-fabricated gate + declare/attach.
     Returns the improved CV. All decisions are the user's; nothing is fabricated."""
-    from cv_agent.ats import (add_declared_skills, apply_keyword_decisions, improve_cv,
-                              keyword_coverage, newly_surfaced_keywords, weavable_entries,
-                              weave_skills)
+    from cv_agent.ats import (add_declared_skills, apply_keyword_decisions, cv_searchable_text,
+                              improve_cv, keyword_coverage, keyword_present,
+                              newly_surfaced_keywords, weavable_entries, weave_skills)
 
     with spinner("Rewriting toward the job (structure is locked)"):
         improved = improve_cv(cv, keywords, provider=s.provider, model=s.model, api_key=key)
@@ -443,18 +443,28 @@ def _run_gates(s: Session, cv, keywords, key):
     #    specific tech line in the attach step below.
     surfaced = newly_surfaced_keywords(cv, improved, keywords)
     kept_surfaced: List[str] = []
+    rejected: List[str] = []
     if surfaced:
         print(c(f"\n  The rewrite added {len(surfaced)} keyword(s) NOT in your CV.", "warn"))
         print("  Keep each ONLY if you genuinely have it.")
-        rejected: List[str] = []
         for k in surfaced:
             (kept_surfaced if confirm(f"    Keep '{k.text}' ({k.importance})?") else rejected).append(k.text)
         if rejected:
             improved = apply_keyword_decisions(cv, improved, rejected)
             print(c(f"  Removed: {', '.join(rejected)}", "dim"))
+            # A kept keyword can share a reworded field with a rejected one and get
+            # reverted away too; re-add any affirmed skill that vanished (to Skills)
+            # so it is never silently lost.
+            low = cv_searchable_text(improved).lower()
+            lost = [t for t in kept_surfaced if not keyword_present(t, low)]
+            if lost:
+                improved = add_declared_skills(improved, lost)
 
-    # 2. Declare gate: add genuine still-missing skills to the Skills section.
-    missing = keyword_coverage(improved, keywords).missing
+    # 2. Declare gate: add genuine still-missing skills to the Skills section. Skip
+    #    anything already decided above (rejected = "I don't have it"; kept = already
+    #    affirmed) so no keyword is asked about twice.
+    decided = set(rejected) | set(kept_surfaced)
+    missing = [k for k in keyword_coverage(improved, keywords).missing if k.text not in decided]
     declared: List[str] = []
     if missing:
         print(c(f"\n  {len(missing)} job keyword(s) still missing. Add ONLY the ones you genuinely have:", "warn"))
@@ -464,8 +474,9 @@ def _run_gates(s: Session, cv, keywords, key):
             print(c(f"  Added to Skills: {', '.join(declared)}", "dim"))
 
     # 3. Attach gate: place any confirmed-genuine skill (kept from the rewrite OR
-    #    just declared) onto a specific role/project's tech line.
-    attachable = kept_surfaced + declared
+    #    just declared) onto a specific role/project's tech line. De-duplicated so a
+    #    skill is never offered twice.
+    attachable = list(dict.fromkeys(kept_surfaced + declared))
     if attachable:
         targets = weavable_entries(improved)
         if targets:

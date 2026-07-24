@@ -36,9 +36,11 @@ from cv_agent.ats import (
     add_declared_skills,
     apply_keyword_decisions,
     ats_report,
+    cv_searchable_text,
     extract_job_keywords,
     improve_cv,
     keyword_coverage,
+    keyword_present,
     newly_surfaced_keywords,
     weavable_entries,
     weave_skills,
@@ -155,11 +157,11 @@ def main() -> None:
         # to your original wording so it disappears cleanly.
         surfaced = newly_surfaced_keywords(cv, improved, keywords)
         kept_surfaced = []   # keywords you affirmed you have - attachable below
+        rejected = []        # keywords you said you do NOT have - skip in the declare gate
         if surfaced:
             print("\n    The rewrite introduced these keywords that were NOT in your original CV.")
             if sys.stdin.isatty():
                 print("    Keep each ONLY if you genuinely have it (answer y); anything else removes it.\n")
-                rejected = []
                 for k in surfaced:
                     ans = input(f"      Keep '{k.text}' ({k.importance})?  [y/N]: ").strip().lower()
                     (kept_surfaced if ans in ("y", "yes") else rejected).append(k.text)
@@ -167,6 +169,12 @@ def main() -> None:
                     improved = apply_keyword_decisions(cv, improved, rejected)
                     print(f"\n    Removed (reverted their wording to your original): "
                           f"{', '.join(rejected)}")
+                    # A kept keyword sharing a field with a rejected one gets reverted
+                    # away too; re-add any affirmed skill that vanished (to Skills).
+                    low = cv_searchable_text(improved).lower()
+                    lost = [t for t in kept_surfaced if not keyword_present(t, low)]
+                    if lost:
+                        improved = add_declared_skills(improved, lost)
                 else:
                     print("\n    Kept all.")
             else:
@@ -180,7 +188,9 @@ def main() -> None:
         # have. You affirm each (you are the source of truth about your own experience),
         # so it is truthful, not fabrication. Confirmed skills go to your Skills section.
         declared = []
-        missing = keyword_coverage(improved, keywords).missing
+        # Skip anything already decided above (rejected OR kept) - no double-asking.
+        decided = set(rejected) | set(kept_surfaced)
+        missing = [k for k in keyword_coverage(improved, keywords).missing if k.text not in decided]
         if missing and sys.stdin.isatty():
             print("\n    These job keywords are still missing. Add ONLY the ones you genuinely have:")
             declared = [k.text for k in missing
@@ -191,8 +201,8 @@ def main() -> None:
                 print(f"\n    Added to your Skills section: {', '.join(declared)}")
 
         # Attach any confirmed-genuine skill (kept from the rewrite OR just declared)
-        # to a specific role/project's tech line.
-        attachable = kept_surfaced + declared
+        # to a specific role/project's tech line (de-duplicated).
+        attachable = list(dict.fromkeys(kept_surfaced + declared))
         if attachable and sys.stdin.isatty():
             targets = weavable_entries(improved)
             if targets:
