@@ -438,39 +438,50 @@ def _run_gates(s: Session, cv, keywords, key):
     with spinner("Rewriting toward the job (structure is locked)"):
         improved = improve_cv(cv, keywords, provider=s.provider, model=s.model, api_key=key)
 
-    # 1. Remove-fabricated gate: confirm any keyword the rewrite introduced.
+    # 1. Remove-fabricated gate: confirm any keyword the rewrite introduced. A KEPT
+    #    one (you affirmed you have it) is a genuine skill you can also place on a
+    #    specific tech line in the attach step below.
     surfaced = newly_surfaced_keywords(cv, improved, keywords)
+    kept_surfaced: List[str] = []
     if surfaced:
         print(c(f"\n  The rewrite added {len(surfaced)} keyword(s) NOT in your CV.", "warn"))
         print("  Keep each ONLY if you genuinely have it.")
-        rejected = [k.text for k in surfaced if not confirm(f"    Keep '{k.text}' ({k.importance})?")]
+        rejected: List[str] = []
+        for k in surfaced:
+            (kept_surfaced if confirm(f"    Keep '{k.text}' ({k.importance})?") else rejected).append(k.text)
         if rejected:
             improved = apply_keyword_decisions(cv, improved, rejected)
             print(c(f"  Removed: {', '.join(rejected)}", "dim"))
 
-    # 2. Declare-and-attach gap-closer: add genuine skills the CV still lacks.
+    # 2. Declare gate: add genuine still-missing skills to the Skills section.
     missing = keyword_coverage(improved, keywords).missing
+    declared: List[str] = []
     if missing:
         print(c(f"\n  {len(missing)} job keyword(s) still missing. Add ONLY the ones you genuinely have:", "warn"))
-        confirmed = [k.text for k in missing if confirm(f"    Do you genuinely have '{k.text}'?")]
-        if confirmed:
-            improved = add_declared_skills(improved, confirmed)
-            print(c(f"  Added to Skills: {', '.join(confirmed)}", "dim"))
-            targets = weavable_entries(improved)
-            if targets:
-                print("\n  Optionally attach a skill to a specific role/project (its tech line):")
-                for idx, (label, _) in enumerate(targets, 1):
-                    print(f"      {c(str(idx), 'b')}) {label}")
-                assignments = []
-                for skill in confirmed:
-                    raw = _input(f"    Attach '{skill}' to which number(s)? (comma-separated, Enter to skip): ")
-                    picks = [int(p) for p in raw.replace(",", " ").split()
-                             if p.isdigit() and 1 <= int(p) <= len(targets)]
-                    for p in picks:
-                        assignments.append((targets[p - 1][1], [skill]))
-                if assignments:
-                    improved = weave_skills(improved, assignments)
-                    print(c(f"  Attached {len(assignments)} placement(s).", "dim"))
+        declared = [k.text for k in missing if confirm(f"    Do you genuinely have '{k.text}'?")]
+        if declared:
+            improved = add_declared_skills(improved, declared)
+            print(c(f"  Added to Skills: {', '.join(declared)}", "dim"))
+
+    # 3. Attach gate: place any confirmed-genuine skill (kept from the rewrite OR
+    #    just declared) onto a specific role/project's tech line.
+    attachable = kept_surfaced + declared
+    if attachable:
+        targets = weavable_entries(improved)
+        if targets:
+            print("\n  Optionally attach a skill to a specific role/project (its tech line):")
+            for idx, (label, _) in enumerate(targets, 1):
+                print(f"      {c(str(idx), 'b')}) {label}")
+            assignments = []
+            for skill in attachable:
+                raw = _input(f"    Attach '{skill}' to which number(s)? (comma-separated, Enter to skip): ")
+                picks = [int(p) for p in raw.replace(",", " ").split()
+                         if p.isdigit() and 1 <= int(p) <= len(targets)]
+                for p in picks:
+                    assignments.append((targets[p - 1][1], [skill]))
+            if assignments:
+                improved = weave_skills(improved, assignments)
+                print(c(f"  Attached {len(assignments)} placement(s).", "dim"))
     return improved
 
 

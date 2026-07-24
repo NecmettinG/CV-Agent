@@ -154,6 +154,7 @@ def main() -> None:
         # with you BEFORE it goes into the PDF; a rejected one has its field reverted
         # to your original wording so it disappears cleanly.
         surfaced = newly_surfaced_keywords(cv, improved, keywords)
+        kept_surfaced = []   # keywords you affirmed you have - attachable below
         if surfaced:
             print("\n    The rewrite introduced these keywords that were NOT in your original CV.")
             if sys.stdin.isatty():
@@ -161,8 +162,7 @@ def main() -> None:
                 rejected = []
                 for k in surfaced:
                     ans = input(f"      Keep '{k.text}' ({k.importance})?  [y/N]: ").strip().lower()
-                    if ans not in ("y", "yes"):
-                        rejected.append(k.text)
+                    (kept_surfaced if ans in ("y", "yes") else rejected).append(k.text)
                 if rejected:
                     improved = apply_keyword_decisions(cv, improved, rejected)
                     print(f"\n    Removed (reverted their wording to your original): "
@@ -178,34 +178,38 @@ def main() -> None:
 
         # Gap-closer: offer to add job keywords the CV still lacks but you GENUINELY
         # have. You affirm each (you are the source of truth about your own experience),
-        # so it is truthful, not fabrication. Confirmed skills go to your Skills
-        # section, and you can attach each to a specific role/project's tech line.
+        # so it is truthful, not fabrication. Confirmed skills go to your Skills section.
+        declared = []
         missing = keyword_coverage(improved, keywords).missing
         if missing and sys.stdin.isatty():
             print("\n    These job keywords are still missing. Add ONLY the ones you genuinely have:")
-            confirmed = [k.text for k in missing
-                         if input(f"      Do you genuinely have '{k.text}'?  [y/N]: ")
-                         .strip().lower() in ("y", "yes")]
-            if confirmed:
-                improved = add_declared_skills(improved, confirmed)
-                print(f"\n    Added to your Skills section: {', '.join(confirmed)}")
+            declared = [k.text for k in missing
+                        if input(f"      Do you genuinely have '{k.text}'?  [y/N]: ")
+                        .strip().lower() in ("y", "yes")]
+            if declared:
+                improved = add_declared_skills(improved, declared)
+                print(f"\n    Added to your Skills section: {', '.join(declared)}")
 
-                targets = weavable_entries(improved)
-                if targets:
-                    print("\n    Optionally attach a skill to a specific role/project (its tech line):")
-                    for idx, (label, _) in enumerate(targets, 1):
-                        print(f"        {idx}. {label}")
-                    assignments = []
-                    for skill in confirmed:
-                        raw = input(f"      Attach '{skill}' to which number(s)?  "
-                                    "(comma-separated, Enter to skip): ").strip()
-                        picks = [int(p) for p in raw.replace(",", " ").split()
-                                 if p.isdigit() and 1 <= int(p) <= len(targets)]
-                        for p in picks:
-                            assignments.append((targets[p - 1][1], [skill]))
-                    if assignments:
-                        improved = weave_skills(improved, assignments)
-                        print(f"    Attached {len(assignments)} skill placement(s) to their tech lines.")
+        # Attach any confirmed-genuine skill (kept from the rewrite OR just declared)
+        # to a specific role/project's tech line.
+        attachable = kept_surfaced + declared
+        if attachable and sys.stdin.isatty():
+            targets = weavable_entries(improved)
+            if targets:
+                print("\n    Optionally attach a skill to a specific role/project (its tech line):")
+                for idx, (label, _) in enumerate(targets, 1):
+                    print(f"        {idx}. {label}")
+                assignments = []
+                for skill in attachable:
+                    raw = input(f"      Attach '{skill}' to which number(s)?  "
+                                "(comma-separated, Enter to skip): ").strip()
+                    picks = [int(p) for p in raw.replace(",", " ").split()
+                             if p.isdigit() and 1 <= int(p) <= len(targets)]
+                    for p in picks:
+                        assignments.append((targets[p - 1][1], [skill]))
+                if assignments:
+                    improved = weave_skills(improved, assignments)
+                    print(f"    Attached {len(assignments)} skill placement(s) to their tech lines.")
 
         # Render the FINAL improved CV (after your keep/remove/add decisions).
         imp_pdf = render_pdf(improved, output_dir=args.output_dir,
