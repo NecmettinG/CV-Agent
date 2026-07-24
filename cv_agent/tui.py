@@ -142,6 +142,43 @@ def _input(prompt: str) -> str:
         raise SystemExit("\nBye.")
 
 
+#: Bracketed-paste markers some terminals wrap pasted text in.
+_PASTE_MARKS = ("\x1b[200~", "\x1b[201~")
+
+
+def read_multiline(end: str = "END") -> str:
+    """Read many lines of pasted/typed text until a terminator.
+
+    Finishes on EOF (Ctrl-Z then Enter on Windows, Ctrl-D on macOS/Linux) or on the
+    sentinel ``end``. The sentinel is matched robustly: on its own line (any case /
+    stray spaces) AND when it arrives glued to the last line - e.g. ``…grow.END`` -
+    which happens when a paste has no trailing newline. Bracketed-paste escape codes
+    are stripped so they don't corrupt the text or hide the sentinel.
+    """
+    print(c(f"  Paste or type your text. To finish: press Ctrl-Z then Enter (Windows) "
+            f"or Ctrl-D (Mac/Linux) - or type {end} on a new line.", "dim"))
+    lines: List[str] = []
+    while True:
+        try:
+            line = input()
+        except EOFError:
+            break
+        for mark in _PASTE_MARKS:
+            line = line.replace(mark, "")
+        if line.strip().upper() == end.upper():         # END on its own line
+            break
+        rs = line.rstrip()
+        if rs.upper().endswith(end.upper()):            # END glued to the last line
+            i = len(rs) - len(end)
+            if i == 0 or not rs[i - 1].isalnum():        # a standalone token, not "backend"
+                head = rs[:i].rstrip()
+                if head:
+                    lines.append(head)
+                break
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
 def choose(title: str, options: List[Tuple[str, object]], *, back: str = "Back"):
     """Show a numbered menu; return the chosen option's value, or None for Back."""
     print("\n" + c(title, "h"))
@@ -305,6 +342,60 @@ def _load_cv_or_none(s: Session, prompt: str):
 # --------------------------------------------------------------------------- #
 # Actions
 # --------------------------------------------------------------------------- #
+_CREATE_GUIDE = (
+    "  Tell me about yourself and I'll organize it into a CV. Include what you can:\n"
+    "    - Your name (required), and contact: email, phone, city\n"
+    "    - Each job: company, title, dates, and what you did / achieved\n"
+    "    - Education: school, degree, years\n"
+    "    - Skills / technologies you know\n"
+    "    - Optional: projects, certificates, languages, LinkedIn/GitHub links\n"
+    "  Write freely - first person is fine. I won't invent anything you don't mention."
+)
+
+
+def action_create(s: Session) -> None:
+    """Build a CV from a free-form self-description (typed/pasted or a text file)."""
+    from cv_agent.ats import ats_report
+    from cv_agent.extract import build_cv
+
+    how = choose("Create a CV from a description - how will you provide it?",
+                 [("Type or paste it here", "paste"), ("Load it from a text file", "file")])
+    if how is None:
+        return
+    if how == "paste":
+        print("\n" + _CREATE_GUIDE + "\n")
+        text = read_multiline()
+    else:
+        kind, path = pick_file("Choose a text file describing you:", {".txt", ".md"})
+        if kind != "file":
+            return
+        if not path.exists():
+            print(c(f"  No such file: {path}", "err"))
+            return
+        text = path.read_text(encoding="utf-8")
+    if not text.strip():
+        print(c("  Nothing to build from.", "warn"))
+        return
+
+    key = ensure_key(s)
+    if not key:
+        return
+    with spinner("Building your CV from the description"):
+        cv = build_cv(text, provider=s.provider, model=s.effective_model, api_key=key)
+    print(f"  -> {c(cv.name, 'b')}: {len(cv.experience)} experience, "
+          f"{len(cv.education)} education, {len(cv.sections)} section(s).")
+    pdf = _render(s, cv)
+    print(c(f"\n  Created -> {pdf}", "ok"))
+
+    # Reuse the ATS report to flag what's thin, so they can enrich + rebuild.
+    report = ats_report(cv, pdf_path=pdf)
+    if report.recommendations:
+        print(c("\n  Tips to strengthen it (add to your description and rebuild):", "warn"))
+        for rec in report.recommendations:
+            print(f"    - {rec}")
+    _offer_open(pdf)
+
+
 def action_convert(s: Session) -> None:
     cv, _ = _load_cv_or_none(s, "Choose a CV to convert to PDF:")
     if cv is None:
@@ -526,7 +617,8 @@ def main() -> None:
     _banner()
     # (label, function, tag)
     actions = [
-        ("Convert a CV to PDF", action_convert, "needs API key"),
+        ("Create a CV from a description", action_create, "needs API key"),
+        ("Convert an existing CV to PDF", action_convert, "needs API key"),
         ("Score a CV for ATS", action_score, "needs API key"),
         ("Improve a CV for a job (guarded)", action_improve, "needs API key"),
         ("Render the built-in sample", action_sample, "offline, no key"),

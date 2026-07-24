@@ -64,6 +64,12 @@ PREFERRED_WEIGHT = 1.0
 MIN_WORDS = 150
 MAX_WORDS = 1200
 
+#: Word-gap tolerance for re-parsing OUR OWN generated PDF. Tectonic/XeTeX spaces
+#: words tightly, so the parser's general 3.0 default merges them ("JavaSpring");
+#: 2.0 recovers clean words. (Real ATS engines like pdfminer read these fine either
+#: way - this just makes the round-trip check verify clean, honest text.)
+ROUNDTRIP_X_TOLERANCE = 2.0
+
 
 class AtsError(RuntimeError):
     """Raised when an LLM ATS step fails (no tool call, bad output, unfaithful rewrite)."""
@@ -118,7 +124,11 @@ class Keyword:
 
     @property
     def weight(self) -> float:
-        return REQUIRED_WEIGHT if self.importance.lower().startswith("req") else PREFERRED_WEIGHT
+        imp = self.importance.lower()
+        is_required = imp.startswith("req") or any(
+            w in imp for w in ("must", "mandator", "critical", "essential")
+        )
+        return REQUIRED_WEIGHT if is_required else PREFERRED_WEIGHT
 
 
 @dataclass
@@ -271,20 +281,24 @@ def keyword_present(keyword: str, text_lower: str) -> bool:
     if not kw:
         return False
 
-    # Exact, boundary-aware. \w boundaries on each side; works for c++, c#, .net
-    # because their non-alnum edges sit next to whitespace/punctuation in the CV.
+    # Pass 1 - exact, boundary-aware. \w boundaries on each side; works for c++,
+    # c#, .net, node.js and phrases as written, and the plural fold catches
+    # microservice(s) / API(s).
     for variant in _plural_variants(kw):
         if re.search(r"(?<!\w)" + re.escape(variant) + r"(?!\w)", text_lower):
             return True
 
-    # Normalized fold for single-token symbol/spacing variants only (no phrases),
-    # e.g. 'node.js' -> 'nodejs', 'ci/cd' -> 'cicd'. Require length >= 3 to avoid
-    # collapsing 'c#'/'c++' into a 1-char substring that matches everywhere.
-    if " " not in kw:
-        norm_kw = re.sub(r"[^a-z0-9]", "", kw)
-        if len(norm_kw) >= 3:
-            if norm_kw in re.sub(r"[^a-z0-9]", "", text_lower):
-                return True
+    # Pass 2 - separator-flexible but BOUNDARY-AWARE. A multi-token keyword's
+    # alphanumeric tokens may be joined by any separator (or none), so 'node.js' ~
+    # 'nodejs', 'rest api' ~ 'rest-api' ~ 'restapi', 'ci/cd' ~ 'cicd'. The alnum
+    # lookarounds stop substring over-matches - crucially 'java' does NOT match
+    # inside 'javascript', 'rust' not in 'trust', '.net' not in 'kubernetes'. A
+    # single alnum token is already fully covered by Pass 1, so we skip it here.
+    tokens = re.findall(r"[a-z0-9]+", kw)
+    if len(tokens) >= 2 and sum(len(t) for t in tokens) >= 3:
+        pat = r"[^a-z0-9]*".join(re.escape(t) for t in tokens)
+        if re.search(r"(?<![a-z0-9])" + pat + r"s?(?![a-z0-9])", text_lower):
+            return True
     return False
 
 
@@ -342,7 +356,7 @@ def apply_keyword_decisions(original: CV, improved: CV, rejected: List[str]) -> 
     """
     rej = [r.strip().lower() for r in rejected if r and r.strip()]
     if not rej:
-        return improved
+        return improved.model_copy(deep=True)   # honor 'returns a new CV' (no alias)
     result = improved.model_copy(deep=True)
 
     def tainted(text: Optional[str]) -> bool:
@@ -394,7 +408,7 @@ def add_declared_skills(cv: CV, skills: List[str], *, section_title: str = "Skil
     """
     additions = [s.strip() for s in skills if s and s.strip()]
     if not additions:
-        return cv
+        return cv.model_copy(deep=True)   # honor 'returns a new CV' (no alias)
     result = cv.model_copy(deep=True)
     target = next((s for s in result.sections if s.kind == "skills"), None)
     if target is None:
@@ -505,10 +519,9 @@ def roundtrip_parse(pdf_path: Union[str, Path], cv: CV, *,
     come back out of the PDF, an ATS won't see it either - the template is at
     fault and should be fixed (not the CV).
     """
-    from cv_agent.parsers.pdf import DEFAULT_X_TOLERANCE
     from cv_agent.parsers.pdf import extract_text as _pdf_text
 
-    xt = DEFAULT_X_TOLERANCE if x_tolerance is None else x_tolerance
+    xt = ROUNDTRIP_X_TOLERANCE if x_tolerance is None else x_tolerance
     # annotate_links=False: the plain text layer, i.e. exactly what an ATS reads.
     text = _pdf_text(pdf_path, annotate_links=False, x_tolerance=xt)
     hay = _norm(text)
@@ -543,13 +556,17 @@ def roundtrip_parse(pdf_path: Union[str, Path], cv: CV, *,
 def _has_quantified_achievement(cv: CV) -> bool:
     """True if any bullet / description contains a digit (a metric, %, count, ...)."""
     def bodies() -> Any:
+        yield cv.summary or ""
         for e in cv.experience:
             yield e.description or ""
             yield from e.highlights
             for sr in e.sub_roles:
                 yield sr.description or ""
                 yield from sr.highlights
+        for ed in cv.education:
+            yield from ed.highlights
         for s in cv.sections:
+            yield s.text or ""            # a 'text'/profile section can carry a metric
             for en in s.entries:
                 yield en.detail or ""
                 yield from en.highlights
@@ -815,6 +832,18 @@ def _faithfulness_violations(original: CV, improved: CV) -> List[str]:
     return problems
 
 
+def _merge_honest_tech(target: Any, source: Any, orig_text_lower: str) -> None:
+    """Append ``source``'s tech_stack items onto ``target``'s ONLY when the tech
+    already appears somewhere in the original CV text - honest surfacing into the
+    tech line (per the rewrite prompt), never fabrication. Mutates ``target``."""
+    have = {t.strip().lower() for t in target.tech_stack}
+    for t in source.tech_stack:
+        t = t.strip()
+        if t and t.lower() not in have and keyword_present(t, orig_text_lower):
+            target.tech_stack.append(t)
+            have.add(t.lower())
+
+
 def _graft_rewrite(original: CV, rewrite: CV) -> CV:
     """Build the improved CV from the ORIGINAL's factual skeleton + the model's
     reworded prose. Only the summary, each experience's description/highlights (and
@@ -827,6 +856,7 @@ def _graft_rewrite(original: CV, rewrite: CV) -> CV:
     dates or to add a new skill line, no matter what the model returned.
     """
     result = original.model_copy(deep=True)
+    orig_text = cv_searchable_text(original).lower()
 
     if rewrite.summary and rewrite.summary.strip():
         result.summary = rewrite.summary
@@ -835,14 +865,18 @@ def _graft_rewrite(original: CV, rewrite: CV) -> CV:
         for o, n in zip(result.experience, rewrite.experience):
             if n.description and n.description.strip():
                 o.description = n.description
-            if n.highlights:
+            # Same-length only: bullets may be reworded, never added/removed - this
+            # stops the model padding a role with fabricated highlight bullets.
+            if n.highlights and len(n.highlights) == len(o.highlights):
                 o.highlights = n.highlights
+            _merge_honest_tech(o, n, orig_text)   # surface genuinely-present tech
             if len(o.sub_roles) == len(n.sub_roles):
                 for os_, ns_ in zip(o.sub_roles, n.sub_roles):
                     if ns_.description and ns_.description.strip():
                         os_.description = ns_.description
-                    if ns_.highlights:
+                    if ns_.highlights and len(ns_.highlights) == len(os_.highlights):
                         os_.highlights = ns_.highlights
+                    _merge_honest_tech(os_, ns_, orig_text)
 
     # Skills lines may be reworded (e.g. normalize spelling) but not added/removed,
     # so the count must match - this stops the model padding skills with keywords.
@@ -968,6 +1002,15 @@ if __name__ == "__main__":  # pragma: no cover
     assert keyword_present("AWS", t)
     assert not keyword_present("Java", t)     # must not false-positive
     assert not keyword_present("R", t)        # boundary: no bare 'r' inside words
+    # no substring over-match (Pass-2 boundary guard)
+    assert not keyword_present("Java", "i use javascript daily")
+    assert not keyword_present("Rust", "building trust with clients")
+    assert not keyword_present(".NET", "we run kubernetes")
+    assert not keyword_present("React", "a reactive system")
+    # separator-flexible phrase matching (no false negatives)
+    assert keyword_present("REST API", "we build rest-api services")   # hyphen
+    assert keyword_present("REST API", "our restapi layer")            # concatenated
+    assert keyword_present("Node.js", "built with nodejs")            # fold still works
     print("keyword matcher OK")
 
     # --- coverage on the sample CV --------------------------------------------
@@ -1032,16 +1075,19 @@ if __name__ == "__main__":  # pragma: no cover
     # ...and a rewrite that tampers with the skeleton is NOT trusted: grafting
     # keeps the ORIGINAL employer/title/dates/tech and school, taking only prose.
     tampered = sample_cv.model_dump()
-    tampered["experience"][0]["company"] = "FabricatedCorp"              # ignored
+    tampered["experience"][0]["company"] = "FabricatedCorp"              # ignored (skeleton)
     tampered["experience"][0]["tech_stack"] = ["Terraform"]             # ignored (not grafted)
-    tampered["experience"][0]["highlights"] = ["Built CI/CD pipelines with Java."]  # grafted
+    tampered["experience"][0]["highlights"] = ["Fabricated extra bullet."]  # PADDING (0->1): blocked
+    # Kartos (exp[2]) has 2 highlights; a SAME-COUNT reword IS grafted.
+    tampered["experience"][2]["highlights"] = ["Reworded one.", "Reworded two."]
     tampered["education"][0]["institution"] = "Fake University"          # ignored
     out3 = improve_cv(sample_cv, kws, client=_fake_cv_client(tampered))
     assert out3.experience[0].company == sample_cv.experience[0].company
     assert out3.experience[0].tech_stack == sample_cv.experience[0].tech_stack
     assert out3.education[0].institution == sample_cv.education[0].institution
-    assert out3.experience[0].highlights == ["Built CI/CD pipelines with Java."]
-    print("skeleton tampering ignored; prose grafted OK")
+    assert out3.experience[0].highlights == sample_cv.experience[0].highlights   # padding blocked
+    assert out3.experience[2].highlights == ["Reworded one.", "Reworded two."]   # reword grafted
+    print("skeleton tampering ignored; padding blocked; same-count reword grafted OK")
 
     # --- newly-surfaced keyword flag (terms to verify) ------------------------
     imp = sample_cv.model_copy(deep=True)

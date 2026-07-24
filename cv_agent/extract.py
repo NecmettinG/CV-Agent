@@ -73,7 +73,9 @@ SYSTEM_PROMPT = (
     "description, or a reference's 'Title, Company'), optional `date_range`. For a "
     "reference, put phone in `phone`, email in `email`, and any website/profile in "
     "`links` (all verbatim) - do NOT put a reference's website in `url` (that hides it "
-    "behind the name). Use `url` ONLY to make a project/certificate title itself a link.\n"
+    "behind the name). Use `url` ONLY to make a project/certificate title itself a link. "
+    "For a project entry, also fill `tech_stack` with the technologies/tools it used "
+    "(named anywhere in its text), exactly as you would for an experience role.\n"
     "    * 'text' - a single paragraph; put it in `text`.\n"
     "  If a section ends with a short standalone note (e.g. 'References available on "
     "request.', a validation-letter remark), put that note in the section's `note` field.\n"
@@ -117,6 +119,46 @@ SYSTEM_PROMPT = (
 )
 
 
+# --------------------------------------------------------------------------- #
+# BUILD mode: turn a free-form self-description (a brain-dump) into a CV. Same
+# anti-fabrication spine as extraction, but it may organize/rephrase loose prose.
+# --------------------------------------------------------------------------- #
+BUILD_SYSTEM_PROMPT = (
+    "You help a person BUILD their CV from a free-form description they write about "
+    "themselves - a brain-dump, often first person ('I worked at...', 'I know...'). Turn it "
+    f"into a structured CV by calling the `{TOOL_NAME}` tool exactly once.\n\n"
+    "Your job is to ORGANIZE and lightly REPHRASE what they tell you into a clean CV - never "
+    "to invent facts.\n\n"
+    "Rules:\n"
+    "- Use ONLY what the person states. NEVER add a skill, employer, job title, date, degree, "
+    "metric, certification, or achievement they did not mention. If a detail is missing (no "
+    "dates for a job, no email), leave that field empty - do NOT guess or fill it in. "
+    "Inventing anything is a failure.\n"
+    "- You MAY rephrase their prose into concise CV wording (turn 'I made checkout faster' into "
+    "a bullet 'Improved checkout performance'), convert first person to CV style, fix grammar, "
+    "and organize loose text into the right places. This rephrasing must add NO new facts.\n"
+    "- `name` is required: use the name they give. Structure the rest as: header (name, "
+    "headline, summary, contact) + typed `experience` and `education` lists + `sections` "
+    "(Skills, Projects, Languages, Certificates, Interests, ...). Group each described job into "
+    "one experience entry (company, title, dates, description/highlights); each school into an "
+    "education entry; skills into a 'skills' section; and so on. For a project you "
+    "describe, fill its `tech_stack` with the technologies you say it used.\n"
+    "- For every role, fill `tech_stack` with the technologies/tools the person says they used "
+    "in it (only those they name).\n"
+    "- `summary`: you MAY compose a short professional summary, but ONLY by rephrasing facts the "
+    "person stated - add no seniority, adjectives, or claims they did not make. Omit it if they "
+    "gave nothing to summarize.\n"
+    "- `headline`: set it only if the person states a clear role/title for themselves; never "
+    "invent one, and do not add 'Senior'/'Lead'/etc. unless they said so.\n"
+    "- Contact: capture email, phone, location and any profile links (LinkedIn/GitHub/site) "
+    "exactly as written. NEVER invent a URL or email - if they name a profile with no URL, "
+    "record nothing for it.\n"
+    "- Set `language` to the ISO 639-1 code of the language they wrote in ('en', 'tr', ...).\n"
+    "- Omit optional fields you cannot fill. Never insert placeholders like 'N/A'. Keep their "
+    "meaning faithful; do not exaggerate."
+)
+
+
 class ExtractionError(RuntimeError):
     """Raised when the model won't call the tool or its output can't be validated."""
 
@@ -143,9 +185,35 @@ def _norm_url(u: str) -> str:
     return u.rstrip("/")
 
 
-def _strip_fabricated_urls(node: Any, source_lower: str) -> Any:
+#: URLs as they appear in the source: parser link markers ``<...>``, explicit
+#: http(s) URLs, and bare domains (+ optional path).
+_SOURCE_URL_RE = re.compile(
+    r"<([^>\s]+)>"
+    r"|(https?://[^\s<>()\"']+)"
+    r"|([a-z0-9][a-z0-9\-]*(?:\.[a-z0-9\-]+)+(?:/[^\s<>()\"']*)?)",
+    re.IGNORECASE,
+)
+
+
+def _source_url_set(text: str) -> set:
+    """The set of NORMALIZED URLs that literally appear in ``text``.
+
+    Verifying a model URL by *equality* against this set (rather than a substring
+    scan of the raw text) is what stops a fabricated bare ``github.com`` from
+    passing just because a real ``github.com/jane`` is present - they normalize to
+    different values."""
+    out = set()
+    for m in _SOURCE_URL_RE.finditer(text):
+        raw = m.group(1) or m.group(2) or m.group(3)
+        n = _norm_url(raw) if raw else ""
+        if n:
+            out.add(n)
+    return out
+
+
+def _strip_fabricated_urls(node: Any, source_urls: set) -> Any:
     """Recursively drop URLs the model invented - any ``url`` whose (normalized)
-    value is not present in the source CV text.
+    value is not one of the URLs that literally appear in the source CV text.
 
     Real URLs are copied from the inline ``anchor <https://...>`` markers, so they
     appear in the source; hallucinated ones (e.g. ``https://linkedin.com`` for a
@@ -154,18 +222,18 @@ def _strip_fabricated_urls(node: Any, source_lower: str) -> Any:
     just cleared (so the field becomes empty rather than a fake link).
     """
     def real(u: Any) -> bool:
-        return isinstance(u, str) and bool(u.strip()) and _norm_url(u) in source_lower
+        return isinstance(u, str) and bool(u.strip()) and _norm_url(u) in source_urls
 
     if isinstance(node, list):
         out = []
         for item in node:
             if isinstance(item, dict) and "label" in item and not real(item.get("url")):
                 continue  # a Link whose URL is fabricated -> drop the whole link
-            out.append(_strip_fabricated_urls(item, source_lower))
+            out.append(_strip_fabricated_urls(item, source_urls))
         return out
     if isinstance(node, dict):
         return {
-            k: _strip_fabricated_urls(v, source_lower)
+            k: _strip_fabricated_urls(v, source_urls)
             for k, v in node.items()
             if not (k == "url" and not real(v))  # clear a fabricated url field
         }
@@ -239,7 +307,7 @@ def extract_cv(
     parameters = cv_tool_parameters()
     messages: List[Dict[str, Any]] = [prov.user_message(_user_message(text, extra_instructions))]
 
-    source_lower = text.lower() if verify_urls else ""
+    source_urls = _source_url_set(text) if verify_urls else set()
     last_error: Optional[ValidationError] = None
     for attempt in range(max_repair_attempts + 1):
         call = prov.call(
@@ -252,12 +320,21 @@ def extract_cv(
             tool_choice=tool_choice,
         )
         if call.arguments is None:
+            # A tool call whose arguments couldn't be parsed (bad JSON) sets a
+            # call_id; that's recoverable - feed it back for repair like a
+            # validation error. A missing call_id means no tool call at all.
+            if call.call_id is not None and attempt < max_repair_attempts:
+                messages.append(prov.assistant_message(call))
+                messages.append(prov.error_message(
+                    call, f"Your {TOOL_NAME} tool call's arguments were not valid JSON. "
+                    f"Call {TOOL_NAME} again with well-formed JSON arguments."))
+                continue
             detail = f" Model said: {call.text!r}" if call.text else ""
-            raise ExtractionError(f"{prov.label} did not return a {TOOL_NAME!r} tool call.{detail}")
+            raise ExtractionError(f"{prov.label} did not return a valid {TOOL_NAME!r} tool call.{detail}")
 
         arguments = call.arguments
         if verify_urls:
-            arguments = _strip_fabricated_urls(arguments, source_lower)
+            arguments = _strip_fabricated_urls(arguments, source_urls)
         try:
             return CV.model_validate(arguments)
         except ValidationError as exc:
@@ -279,6 +356,21 @@ def extract_cv(
         f"CV failed validation after {max_repair_attempts} repair attempt(s):\n"
         + _format_errors(last_error)
     ) from last_error
+
+
+def build_cv(text: str, **kwargs: Any) -> CV:
+    """Build a validated :class:`CV` from a free-form self-description (a brain-dump).
+
+    A thin wrapper over :func:`extract_cv` with the build-tuned
+    :data:`BUILD_SYSTEM_PROMPT`, so it inherits the repair loop, the
+    URL-fabrication guard, and schema validation. Same faithfulness guarantee as
+    extraction: it organizes and rephrases what the person states, and never invents
+    a skill, employer, date, or metric they did not mention.
+
+    All keyword args of :func:`extract_cv` are accepted (``provider``, ``model``,
+    ``api_key``, ...). Do not pass ``system_prompt`` - the build prompt is fixed here.
+    """
+    return extract_cv(text, system_prompt=BUILD_SYSTEM_PROMPT, **kwargs)
 
 
 if __name__ == "__main__":  # pragma: no cover
@@ -328,20 +420,30 @@ if __name__ == "__main__":  # pragma: no cover
     assert cv.name == "Jordan Mercer" and cv.experience[0].company == "PayNova"
     print("OK")
 
+    # build_cv: same machinery, build-tuned prompt (fake client returns a valid CV).
+    built = build_cv("(fake self-description)", client=_FakeAnthropic([valid]), verify_urls=False)
+    assert built.name == "Jordan Mercer" and built.experience[0].company == "PayNova"
+    print("build_cv OK ->", built.name)
+
     # URL guard: fabricated links dropped, real ones (present in source) kept.
-    src = "Necmettin\nGitHub <https://github.com/NecmettinG>\nLinkedIn | GitHub".lower()
+    src_urls = _source_url_set("Necmettin GitHub <https://github.com/NecmettinG> LinkedIn | GitHub")
     args = {
         "name": "X",
         "contact": {"links": [
-            {"label": "GitHub", "url": "https://github.com/NecmettinG"},   # real -> keep
+            {"label": "GitHub", "url": "https://github.com/NecmettinG"},   # real (full) -> keep
+            {"label": "GitHub", "url": "https://github.com"},              # fabricated BARE -> drop
             {"label": "LinkedIn", "url": "https://linkedin.com"},          # fabricated -> drop
+            {"label": "Site", "url": "https://"},                          # degenerate -> drop
         ]},
         "education": [{"institution": "U", "url": "https://fake.example/nope"}],  # fabricated -> clear
         "sections": [{"title": "Refs", "kind": "entries",
                       "entries": [{"title": "Kayhan", "url": "https://linkedin.com/in/x"}]}],
     }
-    cleaned = _strip_fabricated_urls(args, src)
-    assert [l["label"] for l in cleaned["contact"]["links"]] == ["GitHub"], cleaned["contact"]
+    cleaned = _strip_fabricated_urls(args, src_urls)
+    # only the real FULL github url survives; the bare github.com (finding #4) is
+    # dropped even though 'github.com/necmetting' is in the source.
+    kept = [(l["label"], l["url"]) for l in cleaned["contact"]["links"]]
+    assert kept == [("GitHub", "https://github.com/NecmettinG")], kept
     assert "url" not in cleaned["education"][0]
     assert "url" not in cleaned["sections"][0]["entries"][0]
-    print("URL guard OK (kept real link; dropped fabricated link + url fields)")
+    print("URL guard OK (kept real link; dropped fabricated bare/degenerate + url fields)")

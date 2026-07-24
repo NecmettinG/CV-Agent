@@ -183,7 +183,7 @@
 % ------------------------- Dynamic sections ------------------------
 \BLOCK{ for section in cv.sections }
 \BLOCK{ if section.has_content }
-\cvsection{\VAR{ section.title | uc(cv.language) }}
+\cvsection{\VAR{ section.title | uc(cv.language) | e }}
 \BLOCK{ if section.kind == 'skills' and section.bullets }
 \begin{multicols}{2}
 \begin{itemize}[leftmargin=1.4em, itemsep=1pt, topsep=2pt, parsep=0pt, label=\textbullet]

@@ -20,7 +20,7 @@ from cv_agent.ats import (
     weavable_entries,
     weave_skills,
 )
-from cv_agent.extract import ExtractionError, extract_cv
+from cv_agent.extract import ExtractionError, build_cv, extract_cv
 from cv_agent.pipeline import cv_from_file, file_to_pdf, parse_file
 from cv_agent.providers import PRESETS, Provider, build_provider
 from cv_agent.render import render_pdf
@@ -52,6 +52,7 @@ __all__ = [
     "SubRole",
     # extraction (LLM: text -> CV) + provider selection
     "extract_cv",
+    "build_cv",
     "ExtractionError",
     "PRESETS",
     "Provider",

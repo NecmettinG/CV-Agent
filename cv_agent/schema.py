@@ -22,9 +22,13 @@ under its own name instead of being forced into a fixed slot.
 
 from __future__ import annotations
 
+import re
 from typing import Annotated, List, Optional
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+
+#: A URL scheme at the START of the string (http://, https://, ftp://, ...).
+_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.\-]*://", re.IGNORECASE)
 
 
 class _Base(BaseModel):
@@ -43,7 +47,7 @@ def _with_scheme(u: str) -> str:
     often writes a bare domain ('kayhanakbay.com'); without ``https://`` hyperref
     makes it a broken relative link."""
     u = u.strip()
-    if not u or "://" in u or u.startswith(("mailto:", "tel:")):
+    if not u or _SCHEME_RE.match(u) or u.startswith(("mailto:", "tel:")):
         return u
     return "https://" + u
 
@@ -70,7 +74,9 @@ def _tidy_label(label: str) -> str:
     if lab and " " not in lab and ("." in lab or "://" in lab):
         low = lab.lower()
         for domain, name in _PLATFORM_LABELS.items():
-            if domain in low:
+            # Match the domain as a real host, not a bare substring, so 'linux.com'
+            # / 'netflix.com' are not mistaken for the platform 'x.com'.
+            if re.search(r"(?<![a-z0-9-])" + re.escape(domain) + r"(?![a-z0-9])", low):
                 return name
     return label
 
@@ -116,9 +122,16 @@ class DateRange(_Base):
     )
 
     @model_validator(mode="after")
-    def _clear_end_when_current(self) -> "DateRange":
+    def _normalize_span(self) -> "DateRange":
         if self.current:
             self.end = None
+        elif self.end and not self.start:
+            self.start, self.end = self.end, None            # a lone end -> single date
+        elif self.start and self.end:
+            s = (self.start.year, self.start.month or 0)
+            e = (self.end.year, self.end.month or 0)
+            if e < s:
+                self.start, self.end = self.end, self.start   # swap a reversed span
         return self
 
 

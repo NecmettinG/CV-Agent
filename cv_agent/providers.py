@@ -211,14 +211,18 @@ class OpenAICompatProvider(Provider):
         tool_calls = getattr(message, "tool_calls", None)
         if tool_calls:
             tc = tool_calls[0]
+            # Some free/OpenAI-compat backends omit the tool_call id; fall back to a
+            # stable synthetic one so the assistant+tool follow-up messages a repair
+            # attempt sends still reference a matching, non-null id.
+            cid = getattr(tc, "id", None) or "toolcall_0"
             try:
                 args = json.loads(tc.function.arguments or "{}")
             except json.JSONDecodeError as exc:
                 return ToolCall(
-                    tool_name, None, call_id=tc.id, raw=message,
+                    tool_name, None, call_id=cid, raw=message,
                     text=f"(model returned invalid JSON arguments: {exc}) {tc.function.arguments!r}",
                 )
-            return ToolCall(tool_name, args, call_id=tc.id, raw=message)
+            return ToolCall(tool_name, args, call_id=cid, raw=message)
         return ToolCall(tool_name, None, text=getattr(message, "content", None), raw=message)
 
     def assistant_message(self, call: ToolCall) -> Dict[str, Any]:

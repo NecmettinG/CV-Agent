@@ -43,6 +43,9 @@ inventing skills to hit keywords. CV-Agent does neither:
 
 - **Any input → one clean output.** PDF (via `pdfplumber`), DOCX (`python-docx`),
   or `.txt`/`.md` in; a Cambridge-Oxford–style LaTeX PDF out (via Tectonic).
+- **Build from scratch.** No CV yet? Write a free-form description of yourself and
+  it's organized into a formatted CV — with the same no-fabrication guarantee (it
+  never adds anything you didn't say), then tells you what's thin so you can enrich it.
 - **Structured extraction via forced tool-use.** The LLM fills a strict
   [Pydantic](https://docs.pydantic.dev) schema; invalid output is fed back for
   self-repair. The model’s raw text is never trusted directly.
@@ -142,8 +145,8 @@ python -m cv_agent
 ```
 
 This opens a terminal UI with menus for picking a **provider and model**, choosing an
-**action** (convert / score / improve), and selecting a **CV from an auto-discovered
-list**. The guarded improvement gates run inline. API keys are read from the
+**action** (create from a description / convert / score / improve), and selecting a
+**CV from an auto-discovered list**. The guarded improvement gates run inline. API keys are read from the
 provider’s env var if set, otherwise prompted once (hidden) and cached for the
 session only.
 
@@ -197,8 +200,9 @@ print(report.summary_text())          # full score card
 better = improve_cv(cv, keywords, provider="anthropic")
 ```
 
-Lower-level entry points are also exported: `parse_file`, `extract_cv`,
-`render_cv`, `render_pdf`, `roundtrip_parse`, `keyword_coverage`,
+Lower-level entry points are also exported: `parse_file`, `extract_cv`, `build_cv`
+(create a CV from a free-form self-description), `render_cv`, `render_pdf`,
+`roundtrip_parse`, `keyword_coverage`,
 `newly_surfaced_keywords`, `apply_keyword_decisions`, `add_declared_skills`,
 `weavable_entries`, `weave_skills`.
 
